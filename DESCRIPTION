@@ -1,0 +1,24 @@
+Package: multichangepoints
+Type: Package
+Title: Modular Sequential Change-Point Detection
+Version: 0.0.1
+Authors@R: person(given = "Jake", family = "Spertus", role = c("aut", "cre"), email = "jakespertus@gmail.com")
+Description: S4-first framework for sequential multivariate change-point detection
+    using test supermartingales, modular model classes, detector engines,
+    combining strategies, and simulation utilities.
+License: MIT + file LICENSE
+Encoding: UTF-8
+LazyData: true
+Depends: 
+    R (>= 4.1.0),
+    methods
+Imports:
+    stats,
+    utils
+Suggests:
+    knitr,
+    rmarkdown,
+    testthat (>= 3.0.0)
+VignetteBuilder: knitr
+Config/testthat/edition: 3
+RoxygenNote: 7.3.2
