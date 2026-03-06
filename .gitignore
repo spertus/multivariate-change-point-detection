@@ -1,0 +1,19 @@
+# macOS
+.DS_Store
+
+# R session/user files
+.Rhistory
+.RData
+.Ruserdata
+.Rproj.user/
+
+# R package build/check artifacts
+*.tar.gz
+*.Rcheck/
+
+# knitr/rmarkdown outputs
+*.html
+
+# misc editor/temp files
+*.swp
+*~
