@@ -28,9 +28,10 @@ setGeneric("likelihood_increment", function(object, x, history = NULL) {
 # inputs:
 #   object = TestSupermartingale subclass instance
 #   x      = numeric vector, observed stream
+#   log    = logical; if TRUE return log-increments
 # outputs:
-#   numeric length-N vector of positive increments
-setGeneric("compute_increments", function(object, x) {
+#   numeric length-N vector of increments (or log-increments if log=TRUE)
+setGeneric("compute_increments", function(object, x, log = FALSE) {
   standardGeneric("compute_increments")
 })
 
@@ -39,9 +40,10 @@ setGeneric("compute_increments", function(object, x) {
 # inputs:
 #   object = TestSupermartingale subclass instance
 #   x      = numeric vector, observed stream
+#   log    = logical; if TRUE return log-TSM path
 # outputs:
-#   numeric length-N vector of cumulative TSM values
-setGeneric("compute_tsm", function(object, x) {
+#   numeric length-N vector of cumulative TSM values (or log-TSM if log=TRUE)
+setGeneric("compute_tsm", function(object, x, log = FALSE) {
   standardGeneric("compute_tsm")
 })
 
@@ -52,9 +54,10 @@ setGeneric("compute_tsm", function(object, x) {
 #   evidence = numeric scalar increment at time t
 #   t        = integer time index
 #   state    = numeric current detector state
+#   log      = logical; whether evidence/state are on log scale
 # outputs:
 #   list with elements state, alarm (logical), statistic (numeric)
-setGeneric("update_detector", function(object, evidence, t, state) {
+setGeneric("update_detector", function(object, evidence, t, state, log = FALSE) {
   standardGeneric("update_detector")
 })
 
@@ -63,9 +66,10 @@ setGeneric("update_detector", function(object, evidence, t, state) {
 # inputs:
 #   object   = Detector subclass instance
 #   evidence = numeric vector of increments
+#   log      = logical; if TRUE interpret evidence as log-increments and return log-statistic
 # outputs:
 #   list with statistic path, stopping_time, alarm flag, and criterion name
-setGeneric("run_detector", function(object, evidence) {
+setGeneric("run_detector", function(object, evidence, log = FALSE) {
   standardGeneric("run_detector")
 })
 
@@ -75,9 +79,10 @@ setGeneric("run_detector", function(object, evidence) {
 #   object  = Combiner subclass instance
 #   streams = numeric N-by-K matrix of marginal increments
 #   weights = optional numeric length-K vector
+#   log     = logical; if TRUE combine log-increments and return log-increments
 # outputs:
 #   numeric length-N combined increment sequence
-setGeneric("combine_streams", function(object, streams, weights = NULL) {
+setGeneric("combine_streams", function(object, streams, weights = NULL, log = FALSE) {
   standardGeneric("combine_streams")
 })
 

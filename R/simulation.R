@@ -103,6 +103,63 @@ default_gaussian_dgp <- function(N, K = 1L, nu = Inf, pre_params = list(mean = 0
   out
 }
 
+# Function: default_multivariate_gaussian_dgp
+# purpose: generate IID multivariate Gaussian vectors with a shared change-point
+# inputs:
+#   N           = integer horizon
+#   nu          = numeric change-point; if finite and < N, post-change starts at nu+1
+#   pre_params  = list(mu, Sigma) for pre-change MVN draws
+#   post_params = list(mu, Sigma) for post-change MVN draws
+# outputs:
+#   numeric N-by-K matrix
+default_multivariate_gaussian_dgp <- function(N,
+                                              K = 2L,
+                                              nu = Inf,
+                                              pre_params = list(mu = rep(0, K), Sigma = diag(K)),
+                                              post_params = list(mu = rep(1, K), Sigma = diag(K))) {
+  mu_pre_raw <- if (!is.null(pre_params$mu)) pre_params$mu else pre_params$mean
+  mu_post_raw <- if (!is.null(post_params$mu)) post_params$mu else post_params$mean
+  if (is.null(mu_pre_raw) || is.null(mu_post_raw)) {
+    stop("`pre_params` and `post_params` must include `mu` (or alias `mean`).", call. = FALSE)
+  }
+  mu_pre <- as.numeric(mu_pre_raw)
+  mu_post <- as.numeric(mu_post_raw)
+  Sigma_pre <- pre_params$Sigma
+  Sigma_post <- post_params$Sigma
+
+  if (!is.matrix(Sigma_pre) || !is.matrix(Sigma_post)) {
+    stop("`pre_params$Sigma` and `post_params$Sigma` must be matrices.", call. = FALSE)
+  }
+  if (nrow(Sigma_pre) != ncol(Sigma_pre) || nrow(Sigma_post) != ncol(Sigma_post)) {
+    stop("Covariance matrices must be square.", call. = FALSE)
+  }
+  if (length(mu_pre) != nrow(Sigma_pre) || length(mu_post) != nrow(Sigma_post)) {
+    stop("Mean vectors must match covariance dimensions.", call. = FALSE)
+  }
+  if (length(mu_pre) != K || length(mu_post) != K) {
+    stop("`K` must match the dimension of provided means/covariances.", call. = FALSE)
+  }
+
+  if (inherits(try(chol(Sigma_pre), silent = TRUE), "try-error") ||
+      inherits(try(chol(Sigma_post), silent = TRUE), "try-error")) {
+    stop("Covariance matrices must be symmetric positive definite.", call. = FALSE)
+  }
+
+  draw_mvn <- function(n, mu, Sigma) {
+    Z <- matrix(stats::rnorm(n * length(mu)), nrow = n, ncol = length(mu))
+    Z %*% chol(Sigma) + matrix(rep(mu, each = n), nrow = n) # stretch by cholesky, shift by mu
+  }
+
+  pre <- draw_mvn(N, mu_pre, Sigma_pre)
+  post <- draw_mvn(N, mu_post, Sigma_post)
+
+  if (is.finite(nu) && nu < N) {
+    rbind(pre[1:nu, , drop = FALSE], post[(nu + 1):N, , drop = FALSE])
+  } else {
+    pre
+  }
+}
+
 # Internal helper: .run_single
 # purpose: run a detector/TSM pipeline on one generated dataset (univariate or multivariate)
 # inputs:
@@ -111,12 +168,18 @@ default_gaussian_dgp <- function(N, K = 1L, nu = Inf, pre_params = list(mean = 0
 #   x        = numeric vector (N) or matrix (N-by-K)
 #   combiner = optional Combiner object; defaults to flat average in multistream case
 #   weights  = optional numeric weights for weighted combiners
+#   log      = logical; if TRUE run increment generation/combining/detection on log scale
 # outputs:
 #   list returned by run_detector()
-.run_single <- function(detector, tsm, x, combiner = NULL, weights = NULL) {
+.run_single <- function(detector, tsm, x, combiner = NULL, weights = NULL, log = FALSE) {
   if (is.null(dim(x))) {
-    increments <- compute_increments(tsm, x)
-    return(run_detector(detector, increments))
+    increments <- compute_increments(tsm, x, log = log)
+    return(run_detector(detector, increments, log = log))
+  }
+
+  if (!is.list(tsm) && is(tsm@model, "MultivariateModel")) {
+    increments <- compute_increments(tsm, x, log = log)
+    return(run_detector(detector, increments, log = log))
   }
 
   k <- ncol(x)
@@ -127,12 +190,12 @@ default_gaussian_dgp <- function(N, K = 1L, nu = Inf, pre_params = list(mean = 0
     stop("For multivariate data, `tsm` must be a list with one element per stream.", call. = FALSE)
   }
 
-  marg <- sapply(seq_len(k), function(j) compute_increments(tsm[[j]], x[, j]))
+  marg <- sapply(seq_len(k), function(j) compute_increments(tsm[[j]], x[, j], log = log))
   if (is.null(combiner)) {
     combiner <- AverageCombiner()
   }
-  combined_increments <- combine_streams(combiner, marg, weights = weights)
-  run_detector(detector, combined_increments)
+  combined_increments <- combine_streams(combiner, marg, weights = weights, log = log)
+  run_detector(detector, combined_increments, log = log)
 }
 
 # Function: run_simulation
@@ -147,10 +210,11 @@ default_gaussian_dgp <- function(N, K = 1L, nu = Inf, pre_params = list(mean = 0
 #   combiner = optional Combiner object for multistream combination
 #   weights  = optional numeric weights passed to combiner
 #   seed     = integer random seed
+#   log      = logical; if TRUE run detector pipeline using log-increments
 # outputs:
 #   data.frame with one row per detector-DGP pair and columns:
 #     detector, dgp, n_rep, horizon, nu, false_alarm_prob, ARL, ADD
-run_simulation <- function(detector, tsm, dgp, n_rep = 200, N = 500, K = 1L, combiner = NULL, weights = NULL, seed = 1L) {
+run_simulation <- function(detector, tsm, dgp, n_rep = 200, N = 500, K = 1L, combiner = NULL, weights = NULL, seed = 1L, log = FALSE) {
   if (!is.list(detector)) detector <- list(detector)
   if (!is.list(dgp)) dgp <- list(dgp)
   set.seed(seed)
@@ -165,7 +229,7 @@ run_simulation <- function(detector, tsm, dgp, n_rep = 200, N = 500, K = 1L, com
 
       for (r in seq_len(n_rep)) {
         x <- generate_stream(dgp[[gi]], N = N, K = K)
-        out <- .run_single(detector[[di]], tsm, x, combiner = combiner, weights = weights)
+        out <- .run_single(detector[[di]], tsm, x, combiner = combiner, weights = weights, log = log)
         stop_times[r] <- out$stopping_time
       }
 

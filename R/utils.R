@@ -11,6 +11,20 @@
   }
 }
 
+# Internal helper: .logsumexp
+# purpose: stable computation of log(sum(exp(x)))
+# inputs:
+#   x = numeric vector
+# outputs:
+#   numeric scalar log-sum-exp
+.logsumexp <- function(x) {
+  x <- as.numeric(x)
+  if (length(x) == 0L) return(-Inf)
+  m <- max(x)
+  if (!is.finite(m)) return(m)
+  m + log(sum(exp(x - m)))
+}
+
 # Helper: increments_to_tsm
 # purpose: construct a TSM-style path from one-step increments
 # inputs:
@@ -25,7 +39,7 @@ increments_to_tsm <- function(increments, initial = 1, running_max = FALSE, log 
   if (length(initial) != 1L || !is.finite(initial) || initial <= 0) {
     stop("`initial` must be a positive finite scalar.", call. = FALSE)
   }
-  if(log){
+  if (log) {
     path <- log(initial) + cumsum(log(pmax(increments, .Machine$double.eps)))
   } else {
     path <- initial * cumprod(pmax(increments, .Machine$double.eps))

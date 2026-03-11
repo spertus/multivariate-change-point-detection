@@ -54,11 +54,15 @@ UniversalPortfolioCombiner <- function(resolution = 6, max_points = 300, name = 
 #   object  = ProductCombiner object
 #   streams = numeric N-by-K matrix of marginal increment sequences
 #   weights = ignored for this combiner
+#   log     = logical; if TRUE combine log-increments and return log-increments
 # outputs:
-#   numeric length-N vector (row-wise products)
-setMethod("combine_streams", "ProductCombiner", function(object, streams, weights = NULL) {
+#   numeric length-N vector (row-wise products or sums of log-increments)
+setMethod("combine_streams", "ProductCombiner", function(object, streams, weights = NULL, log = FALSE) {
   if (!is.matrix(streams) || !is.numeric(streams)) {
     stop("`streams` must be a numeric matrix of marginal increment sequences.", call. = FALSE)
+  }
+  if (log) {
+    return(rowSums(streams))
   }
   apply(streams, 1, prod)
 })
@@ -68,9 +72,10 @@ setMethod("combine_streams", "ProductCombiner", function(object, streams, weight
 #   object  = AverageCombiner object
 #   streams = numeric N-by-K matrix of marginal increment sequences
 #   weights = optional nonnegative numeric length-K vector (defaults flat)
+#   log     = logical; if TRUE combine log-increments and return log-increments
 # outputs:
-#   numeric length-N vector (weighted averages)
-setMethod("combine_streams", "AverageCombiner", function(object, streams, weights = NULL) {
+#   numeric length-N vector of combined increments (or log-increments)
+setMethod("combine_streams", "AverageCombiner", function(object, streams, weights = NULL, log = FALSE) {
   if (!is.matrix(streams) || !is.numeric(streams)) {
     stop("`streams` must be a numeric matrix of marginal increment sequences.", call. = FALSE)
   }
@@ -82,7 +87,17 @@ setMethod("combine_streams", "AverageCombiner", function(object, streams, weight
     stop("`weights` must be nonnegative and have one entry per stream.", call. = FALSE)
   }
   w <- weights / sum(weights)
-  as.vector(streams %*% w)
+
+  if (!log) {
+    return(as.vector(streams %*% w))
+  }
+
+  log_w <- ifelse(w > 0, log(w), -Inf)
+  out <- numeric(nrow(streams))
+  for (t in seq_len(nrow(streams))) {
+    out[t] <- .logsumexp(log_w + streams[t, ])
+  }
+  out
 })
 
 # Method: combine_streams for UniversalPortfolioCombiner
@@ -90,9 +105,10 @@ setMethod("combine_streams", "AverageCombiner", function(object, streams, weight
 #   object  = UniversalPortfolioCombiner object
 #   streams = numeric N-by-K matrix of marginal increment sequences
 #   weights = currently unused (reserved for future extension)
+#   log     = logical; if TRUE combine log-increments and return log-increments
 # outputs:
-#   numeric length-N vector, mixed-portfolio one-step increments
-setMethod("combine_streams", "UniversalPortfolioCombiner", function(object, streams, weights = NULL) {
+#   numeric length-N vector, mixed-portfolio one-step increments (or log-increments)
+setMethod("combine_streams", "UniversalPortfolioCombiner", function(object, streams, weights = NULL, log = FALSE) {
   if (!is.matrix(streams) || !is.numeric(streams)) {
     stop("`streams` must be a numeric matrix of marginal increment sequences.", call. = FALSE)
   }
@@ -113,14 +129,32 @@ setMethod("combine_streams", "UniversalPortfolioCombiner", function(object, stre
   }
 
   m <- nrow(grid)
-  wealth <- rep(1, m)
-  combined_inc <- numeric(n)
 
-  for (t in seq_len(n)) {
-    gross <- pmax(as.vector(grid %*% streams[t, ]), .Machine$double.eps)
-    combined_inc[t] <- sum(wealth * gross) / sum(wealth)
-    wealth <- wealth * gross
+  if (!log) {
+    wealth <- rep(1, m)
+    combined_inc <- numeric(n)
+
+    for (t in seq_len(n)) {
+      gross <- pmax(as.vector(grid %*% streams[t, ]), .Machine$double.eps)
+      combined_inc[t] <- sum(wealth * gross) / sum(wealth)
+      wealth <- wealth * gross
+    }
+
+    return(combined_inc)
   }
 
-  combined_inc
+  log_grid <- log(grid)
+  log_wealth <- rep(0, m)
+  combined_log_inc <- numeric(n)
+
+  for (t in seq_len(n)) {
+    log_gross <- numeric(m)
+    for (i in seq_len(m)) {
+      log_gross[i] <- .logsumexp(log_grid[i, ] + streams[t, ])
+    }
+    combined_log_inc[t] <- .logsumexp(log_wealth + log_gross) - .logsumexp(log_wealth)
+    log_wealth <- log_wealth + log_gross
+  }
+
+  combined_log_inc
 })

@@ -44,7 +44,6 @@ ShiryaevRobertsDetector <- function(alpha = 0.05,
 
   if (criterion == "PFA") {
     if (length(spending) == 0L) {
-      # Default: fixed finite-support schedule, normalized once at construction.
       spending <- .geometric_spending(spending_length, p = geometric_p)
       spending <- spending / sum(spending)
     }
@@ -93,40 +92,57 @@ CUSUMDetector <- function(alpha = 0.05,
 # Method: update_detector for ShiryaevRobertsDetector
 # inputs:
 #   object   = ShiryaevRobertsDetector object
-#   evidence = numeric scalar multiplicative increment
+#   evidence = numeric scalar increment (or log-increment if log=TRUE)
 #   t        = integer time index
-#   state    = numeric current S-R state R_{t-1}
+#   state    = numeric current S-R state (or log-state if log=TRUE)
+#   log      = logical; if TRUE use log-scale recursion and return log-statistic
 # outputs:
 #   list with updated state, alarm flag, and statistic value at time t
-setMethod("update_detector", "ShiryaevRobertsDetector", function(object, evidence, t, state) {
+setMethod("update_detector", "ShiryaevRobertsDetector", function(object, evidence, t, state, log = FALSE) {
+  if (!log) {
+    if (object@criterion == "ARL") {
+      Rt <- (1 + state) * evidence
+    } else {
+      if (length(object@spending) < t) {
+        pi_t <- 0
+      } else {
+        pi_t <- object@spending[t]
+      }
+      Rt <- (pi_t + state) * evidence
+    }
+    alarm <- Rt >= object@threshold
+    return(list(state = Rt, alarm = alarm, statistic = Rt))
+  }
+
+  log_inc <- evidence
   if (object@criterion == "ARL") {
-    # ARL control: invest one fixed dollar each round
-    Rt <- (1 + state) * evidence
+    log_add <- 0
   } else {
     if (length(object@spending) < t) {
-      #spending schedule is exhausted
-      pi_t <- 0
+      log_add <- -Inf
     } else {
       pi_t <- object@spending[t]
+      log_add <- if (pi_t <= 0) -Inf else log(pi_t)
     }
-   
-    # PFA control: inject pi_t into the recursion; threshold is fixed.
-    Rt <- (pi_t + state) * evidence
   }
-  alarm <- Rt >= object@threshold
-  list(state = Rt, alarm = alarm, statistic = Rt)
+
+  logRt <- log_inc + .logsumexp(c(log_add, state))
+  alarm <- logRt >= log(object@threshold)
+  list(state = logRt, alarm = alarm, statistic = logRt)
 })
 
 # Method: update_detector for CUSUMDetector
 # inputs:
 #   object   = CUSUMDetector object
-#   evidence = numeric scalar multiplicative increment
+#   evidence = numeric scalar increment (or log-increment if log=TRUE)
 #   t        = integer time index
-#   state    = numeric current CUSUM state S_{t-1}
+#   state    = numeric current CUSUM state
+#   log      = logical; if TRUE evidence is interpreted as log-increment
 # outputs:
 #   list with updated state, alarm flag, and statistic value at time t
-setMethod("update_detector", "CUSUMDetector", function(object, evidence, t, state) {
-  St <- max(0, state + log(pmax(evidence, .Machine$double.eps)))
+setMethod("update_detector", "CUSUMDetector", function(object, evidence, t, state, log = FALSE) {
+  log_inc <- if (log) evidence else log(pmax(evidence, .Machine$double.eps))
+  St <- max(0, state + log_inc)
   if (object@criterion == "ARL") {
     alarm <- St >= object@threshold
   } else {
@@ -138,22 +154,23 @@ setMethod("update_detector", "CUSUMDetector", function(object, evidence, t, stat
 # Method: run_detector for Detector
 # inputs:
 #   object   = Detector subclass object
-#   evidence = numeric vector of one-step increments
+#   evidence = numeric vector of one-step increments (or log-increments if log=TRUE)
+#   log      = logical; if TRUE run recursion in log domain and return log-statistics
 # outputs:
 #   list with elements:
 #     statistic     = numeric vector detector path over full input horizon
 #     stopping_time = integer or Inf
 #     alarm         = logical
 #     criterion     = character criterion used
-setMethod("run_detector", "Detector", function(object, evidence) {
+setMethod("run_detector", "Detector", function(object, evidence, log = FALSE) {
   .assert_numeric_vector(evidence, "evidence")
   n <- length(evidence)
   stat <- numeric(n)
-  state <- 0
+  state <- if (log && is(object, "ShiryaevRobertsDetector")) -Inf else 0
   stop_time <- Inf
 
   for (t in seq_len(n)) {
-    step <- update_detector(object, evidence = evidence[t], t = t, state = state)
+    step <- update_detector(object, evidence = evidence[t], t = t, state = state, log = log)
     state <- step$state
     stat[t] <- step$statistic
     if (isTRUE(step$alarm) && !is.finite(stop_time)) {
@@ -161,5 +178,5 @@ setMethod("run_detector", "Detector", function(object, evidence) {
     }
   }
 
-  list(statistic = stat, stopping_time = stop_time, alarm = is.finite(stop_time), criterion = object@criterion)
+  list(statistic = stat, stopping_time = stop_time, alarm = is.finite(stop_time), criterion = object@criterion, log = log)
 })

@@ -34,3 +34,19 @@ test_that("AR1 conditional mean uses intercept parameterization", {
   d_off_mean <- model_density(m, x = 3, regime = "pre", history = c(4))
   expect_gt(d_at_mean, d_off_mean)
 })
+
+test_that("Multivariate Gaussian model returns scalar density and valid increment", {
+  m <- MultivariateGaussianModel(
+    mu_pre = c(0, 0),
+    Sigma_pre = diag(2),
+    mu_post = c(1, 1),
+    Sigma_post = diag(2)
+  )
+
+  d <- model_density(m, x = c(0, 0), regime = "pre")
+  inc <- likelihood_increment(m, x = c(0.2, -0.1))
+
+  expect_true(is.numeric(d) && length(d) == 1)
+  expect_true(is.numeric(inc) && length(inc) == 1)
+  expect_gt(inc, 0)
+})

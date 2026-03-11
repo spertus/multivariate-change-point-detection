@@ -205,8 +205,86 @@ This returns Monte Carlo summaries including:
 - `ARL`: average run length to alarm (censored at horizon)
 - `ADD`: average detection delay after the change
 
-## Next steps
+## Multivariate detection
 
+```{r}
+K <- 3 # number of streams
+N <- 250 # length of streams
+dgp_mvn <- DGP(
+  generator = default_multivariate_gaussian_dgp,
+  pre_params = list(mu = c(-1, 0, 1), Sigma = diag(K)), # parameters pre-change
+  post_params = list(mu = c(-1, 1, 1), Sigma = diag(K)), # parameters post-change
+  nu = 120, # change-point
+  name = "mv-gauss-change"
+)
 
-- combining marginal TSMs for multistream data
-- other model classes (e.g., AR(1), nonparametric K-cube models)
+# generate data from the dgp
+x <- generate_stream(dgp_mvn, N = N, K = K)
+
+# true alternative
+model_true <- MultivariateGaussianModel(
+  mu_pre = c(-1, 0, 1),
+  Sigma_pre = diag(K),
+  mu_post = c(-1, 1, 1),
+  Sigma_post = diag(K)
+)
+# mis-specified alternative
+model_miss <- MultivariateGaussianModel(
+  mu_pre = c(-1, 0, 1),
+  Sigma_pre = diag(K),
+  mu_post = c(1, 1, 1),
+  Sigma_post = diag(K)
+)
+
+# instantiate TSMs and compute increments
+inc_true <- compute_increments(SimpleVsSimpleTSM(model_true), x)
+inc_miss <- compute_increments(SimpleVsSimpleTSM(model_miss), x)
+
+# instantiate detector and compute sequence
+sr <-  ShiryaevRobertsDetector(alpha = 0.001, criterion = "ARL")
+det_out_true <- run_detector(sr, inc_true)
+det_out_miss <- run_detector(sr, inc_miss)
+```
+
+```{r fig.cap="Multivariate data, helper TSMs, and detector statistics (true vs mis-specified alternative)."}
+old_par <- par(mfrow = c(1, 3))
+
+# Panel 1: K data streams
+matplot(x, type = "l", lty = 1, lwd = 1.5,
+        xlab = "time", ylab = "x_tk", main = "Data Streams", ylim = c(-5, 5))
+abline(v = dgp_mvn@nu, lty = 2, col = "gray40")
+legend("topleft",
+       legend = paste0("stream ", seq_len(ncol(x))),
+       col = seq_len(ncol(x)), lty = 1, lwd = 1.5, cex = 0.8, bty = "n")
+
+# Panel 2: helper TSMs from increments
+tsm_true <- increments_to_tsm(inc_true)
+tsm_miss <- increments_to_tsm(inc_miss)
+plot(log(tsm_true), type = "l", lwd = 2, col = "darkgreen",
+     xlab = "time", ylab = "log helper TSM", main = "Helper TSMs", ylim = c())
+lines(log(tsm_miss), lwd = 2, col = "darkorange")
+abline(v = dgp_mvn@nu, lty = 2, col = "gray40")
+legend("topleft",
+       legend = c("true model", "mis-specified model"),
+       col = c("darkgreen", "darkorange"),
+       lty = 1, lwd = 2, cex = 0.8, bty = "n")
+
+# Panel 3: detector statistics
+plot(log(det_out_true$statistic), type = "l", lwd = 2, col = "darkgreen",
+     xlab = "time", ylab = "log R_t", main = "S-R Statistics")
+lines(log(det_out_miss$statistic), lwd = 2, col = "darkorange")
+abline(h = log(sr@threshold), lty = 3, col = "gray40")
+abline(v = dgp_mvn@nu, lty = 2, col = "gray40")
+if (is.finite(det_out_true$stopping_time)) {
+  abline(v = det_out_true$stopping_time, lwd = 1.5, col = "darkgreen")
+}
+if (is.finite(det_out_miss$stopping_time)) {
+  abline(v = det_out_miss$stopping_time, lwd = 1.5, col = "darkorange")
+}
+legend("topleft",
+       legend = c("true model", "mis-specified model"),
+       col = c("darkgreen", "darkorange"),
+       lty = 1, lwd = 2, cex = 0.8, bty = "n")
+
+par(old_par)
+```
