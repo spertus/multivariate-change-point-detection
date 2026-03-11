@@ -1,6 +1,6 @@
 test_that("increment sequence has requested length", {
   m <- GaussianModel(mean_pre = 0, sd_pre = 1, mean_post = 1, sd_post = 1)
-  tsm <- SimpleVsSimpleTSM(m)
+  tsm <- TSM(m)
   x <- rnorm(25)
   inc <- compute_increments(tsm, x)
   log_inc <- compute_increments(tsm, x, log = TRUE)
@@ -15,7 +15,7 @@ test_that("increment sequence has requested length", {
 
 test_that("SR detector returns finite stop under strong post-change data", {
   m <- GaussianModel(mean_pre = 0, sd_pre = 1, mean_post = 2, sd_post = 1)
-  tsm <- SimpleVsSimpleTSM(m)
+  tsm <- TSM(m)
   x <- c(rnorm(40, 0, 1), rnorm(40, 3, 1))
   inc <- compute_increments(tsm, x)
   d <- ShiryaevRobertsDetector(alpha = 0.1, criterion = "ARL")
@@ -25,7 +25,7 @@ test_that("SR detector returns finite stop under strong post-change data", {
 
 test_that("CUSUM detector statistic stays nonnegative", {
   m <- GaussianModel(mean_pre = 0, sd_pre = 1, mean_post = 0.3, sd_post = 1)
-  tsm <- SimpleVsSimpleTSM(m)
+  tsm <- TSM(m)
   inc <- compute_increments(tsm, rnorm(50))
   d <- CUSUMDetector(alpha = 0.1)
   out <- run_detector(d, inc)
@@ -47,7 +47,7 @@ test_that("joint multivariate Gaussian pipeline works without combiners", {
     mu_post = c(1, 1),
     Sigma_post = diag(2)
   )
-  tsm <- SimpleVsSimpleTSM(model)
+  tsm <- TSM(model)
 
   x <- cbind(
     c(rnorm(40, 0, 1), rnorm(40, 2, 1)),
@@ -64,7 +64,7 @@ test_that("joint multivariate Gaussian pipeline works without combiners", {
 
 test_that("SR detector log mode matches standard mode for stopping time", {
   m <- GaussianModel(mean_pre = 0, sd_pre = 1, mean_post = 1, sd_post = 1)
-  tsm <- SimpleVsSimpleTSM(m)
+  tsm <- TSM(m)
   x <- c(rnorm(40, 0, 1), rnorm(40, 2, 1))
 
   inc <- compute_increments(tsm, x, log = FALSE)
@@ -79,10 +79,10 @@ test_that("SR detector log mode matches standard mode for stopping time", {
 })
 
 test_that("composite Gaussian post model works through increment pipeline", {
-  model <- GaussianCompositePostModel(
+  model <- GaussianModel(
     mean_pre = 0,
     sd_pre = 1,
-    mean_interval = c(-1, 2),
+    mean_post = c(-1, 2),
     sd_post = 1,
     method = "predictable",
     update_window = 5
@@ -100,16 +100,15 @@ test_that("composite Gaussian post model works through increment pipeline", {
 
 test_that("multivariate composite Gaussian model works through joint increment pipeline", {
   K <- 2
-  model <- MultivariateGaussianCompositePostModel(
+  model <- MultivariateGaussianModel(
     mu_pre = rep(0, K),
     Sigma_pre = diag(K),
-    mean_box = cbind(rep(-1, K), rep(2, K)),
-    Sigma_post = diag(K),
+    mu_post = cbind(rep(-1, K), rep(2, K)),
+    Sigma_post = NULL,
     method = "predictable",
-    update_window = 5,
-    estimate_Sigma_post = TRUE
+    update_window = 5
   )
-  tsm <- SimpleVsSimpleTSM(model)
+  tsm <- TSM(model)
   x <- cbind(c(rnorm(40, 0, 1), rnorm(40, 1.5, 1)),
              c(rnorm(40, 0, 1), rnorm(40, 0.5, 1)))
   inc <- compute_increments(tsm, x)

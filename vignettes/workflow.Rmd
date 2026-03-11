@@ -40,7 +40,7 @@ model <- GaussianModel(
 )
 
 # construct a tsm object from the model, it will receive data
-tsm <- SimpleVsSimpleTSM(model)
+tsm <- TSM(model)
 ```
 
 
@@ -67,7 +67,7 @@ head(x)
 
 ```{r}
 # increment sequence from data x
-inc <- compute_increments(tsm, x)
+inc <- compute_increments(tsm, x, log = TRUE)
 
 # instantiate a detector class with ARL control
 sr_1 <- ShiryaevRobertsDetector(
@@ -81,8 +81,8 @@ sr_2 <- ShiryaevRobertsDetector(
 
 
 # push increments through detector sr
-det_out_1 <- run_detector(sr_1, inc)
-det_out_2 <- run_detector(sr_2, inc)
+det_out_1 <- run_detector(sr_1, inc, log = TRUE)
+det_out_2 <- run_detector(sr_2, inc, log = TRUE)
 str(det_out_1)
 ```
 
@@ -103,7 +103,7 @@ plot(z, type = "l", lwd = 2, col = "steelblue",
      main = "log-TSM sequence", xlab = "time", ylab = "TSM")
 abline(v = dgp@nu, lty = 2, col = "gray50")
 
-plot(log(det_out_1$statistic), type = "l", lwd = 2, col = "firebrick",
+plot(det_out_1$statistic, type = "l", lwd = 2, col = "firebrick",
      main = "log-S-R statistic (ARL = 20)", xlab = "time", ylab = "R_t")
 abline(h = log(sr_1@threshold), lty = 3, col = "gray50")
 abline(v = dgp@nu, lty = 2, col = "gray50")
@@ -111,7 +111,7 @@ if (is.finite(det_out_1$stopping_time)) {
   abline(v = det_out_1$stopping_time, lwd = 2, col = "darkgreen")
 }
 
-plot(log(det_out_2$statistic), type = "l", lwd = 2, col = "firebrick",
+plot(det_out_2$statistic, type = "l", lwd = 2, col = "firebrick",
      main = "log-S-R statistic (ARL = 1000)", xlab = "time", ylab = "R_t")
 abline(h = log(sr_2@threshold), lty = 3, col = "gray50")
 abline(v = dgp@nu, lty = 2, col = "gray50")
@@ -148,17 +148,20 @@ sr_pfa_2 <- ShiryaevRobertsDetector(
 
 
 # push increments through detector sr
-det_out_1 <- run_detector(sr_pfa_1, inc)
-det_out_2 <- run_detector(sr_pfa_2, inc)
+det_out_1 <- run_detector(sr_pfa_1, inc, log = TRUE)
+det_out_2 <- run_detector(sr_pfa_2, inc, log = TRUE)
 ```
 
 
-```{r fig.cap="TSM helper path and PFA-controlled S-R statistic with alarm time."}
-old_par <- par(mfrow = c(1, 2))
+```{r fig.cap="TSM helper path and PFA-controlled S-R statistics with alarm time."}
+old_par <- par(mfrow = c(1, 3))
 
+plot(z, type = "l", lwd = 2, col = "steelblue",
+     main = "log-TSM sequence", xlab = "time", ylab = "TSM")
+abline(v = dgp@nu, lty = 2, col = "gray50")
 
-plot(log(det_out_1$statistic), type = "l", lwd = 2, col = "firebrick",
-     main = "log-S-R statistic", xlab = "time", ylab = "R_t")
+plot(det_out_1$statistic, type = "l", lwd = 2, col = "firebrick",
+     main = "log-S-R statistic (geom spend)", xlab = "time", ylab = "R_t")
 abline(h = log(sr_pfa_1@threshold), lty = 3, col = "gray50")
 abline(v = dgp@nu, lty = 2, col = "gray50")
 if (is.finite(det_out_1$stopping_time)) {
@@ -166,8 +169,8 @@ if (is.finite(det_out_1$stopping_time)) {
 }
 
 
-plot(log(det_out_2$statistic), type = "l", lwd = 2, col = "firebrick",
-     main = "log-S-R statistic", xlab = "time", ylab = "R_t")
+plot(det_out_2$statistic, type = "l", lwd = 2, col = "firebrick",
+     main = "log-S-R statistic (conc spend)", xlab = "time", ylab = "R_t")
 abline(h = log(sr_pfa_2@threshold), lty = 3, col = "gray50")
 abline(v = dgp@nu, lty = 2, col = "gray50")
 if (is.finite(det_out_2$stopping_time)) {
@@ -201,7 +204,7 @@ This returns Monte Carlo summaries including:
 
 - `false_alarm_prob`: proportion of runs alarming before (or at) the change
 - `ARL`: average run length to alarm (censored at horizon)
-- `ADD`: average detection delay after the change
+- `CAD`: average detection delay after the change
 
 ## Multivariate detection
 
@@ -213,8 +216,8 @@ K <- 3 # number of streams
 N <- 250 # length of streams
 dgp_mvn <- DGP(
   generator = default_multivariate_gaussian_dgp,
-  pre_params = list(mu = c(-1, 0, 1), Sigma = diag(K)), # parameters pre-change
-  post_params = list(mu = c(-1, 1, 1), Sigma = diag(K)), # parameters post-change
+  pre_params = list(mu = c(0, 0, 0), Sigma = diag(K)), # parameters pre-change
+  post_params = list(mu = c(1, 0, 0), Sigma = diag(K)), # parameters post-change
   nu = 120, # change-point
   name = "mv-gauss-change"
 )
@@ -224,14 +227,14 @@ x <- generate_stream(dgp_mvn, N = N, K = K)
 
 # true alternative
 model_true <- MultivariateGaussianModel(
-  mu_pre = c(-1, 0, 1),
+  mu_pre = c(0, 0, 0),
   Sigma_pre = diag(K),
-  mu_post = c(-1, 1, 1),
+  mu_post = c(1, 0, 0),
   Sigma_post = diag(K)
 )
 # mis-specified alternative
 model_miss <- MultivariateGaussianModel(
-  mu_pre = c(-1, 0, 1),
+  mu_pre = c(0, 0, 0),
   Sigma_pre = diag(K),
   mu_post = c(1, 1, 1),
   Sigma_post = diag(K)
@@ -259,10 +262,10 @@ legend("topleft",
        col = seq_len(ncol(x)), lty = 1, lwd = 1.5, cex = 0.8, bty = "n")
 
 # Panel 2: helper TSMs from increments
-tsm_true <- compute_tsm(SimpleVsSimpleTSM(model_true), x, log = TRUE)
-tsm_miss <- compute_tsm(SimpleVsSimpleTSM(model_miss), x, log = TRUE)
+tsm_true <- compute_tsm(TSM(model_true), x, log = TRUE)
+tsm_miss <- compute_tsm(TSM(model_miss), x, log = TRUE)
 plot(tsm_true, type = "l", lwd = 2, col = "darkgreen",
-     xlab = "time", ylab = "log helper TSM", main = "Helper TSMs", ylim = c(-500, 0))
+     xlab = "time", ylab = "log helper TSM", main = "Helper TSMs", ylim = range(c(tsm_true, tsm_miss)))
 lines(tsm_miss, lwd = 2, col = "darkorange")
 abline(v = dgp_mvn@nu, lty = 2, col = "gray40")
 legend("topleft",

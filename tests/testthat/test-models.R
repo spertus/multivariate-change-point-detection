@@ -75,14 +75,13 @@ test_that(".predictable_mean_estimate returns mean when inside bounds", {
 
 
 test_that("Gaussian composite post model (predictable) respects update window", {
-  m <- GaussianCompositePostModel(
+  m <- GaussianModel(
     mean_pre = 0,
     sd_pre = 1,
-    mean_interval = c(-1, 2),
+    mean_post = c(-1, 2),
     sd_post = 1,
     method = "predictable",
-    update_window = 2,
-    init_mean = 0
+    update_window = 2
   )
 
   # At t = 4 (history length 3), update_window = 2 => estimate based on first 2 values only.
@@ -93,10 +92,10 @@ test_that("Gaussian composite post model (predictable) respects update window", 
 })
 
 test_that("Gaussian composite post model (mixture) returns finite positive increment", {
-  m <- GaussianCompositePostModel(
+  m <- GaussianModel(
     mean_pre = 0,
     sd_pre = 1,
-    mean_interval = c(-1, 1),
+    mean_post = c(-1, 1),
     sd_post = 1,
     method = "mixture",
     grid_size = 5
@@ -110,14 +109,13 @@ test_that("Gaussian composite post model (mixture) returns finite positive incre
 })
 
 test_that("Gaussian composite post model can estimate post-change sd from lagged data", {
-  m <- GaussianCompositePostModel(
+  m <- GaussianModel(
     mean_pre = 0,
     sd_pre = 1,
-    mean_interval = c(-1, 2),
-    sd_post = 1,
+    mean_post = c(-1, 2),
+    sd_post = numeric(0),
     method = "predictable",
-    update_window = 3,
-    estimate_sd_post = TRUE
+    update_window = 3
   )
 
   inc <- likelihood_increment(m, x = 2, history = c(2, 2, 2, -1))
@@ -127,14 +125,13 @@ test_that("Gaussian composite post model can estimate post-change sd from lagged
 
 test_that("Multivariate Gaussian composite post model supports box constraints and unknown Sigma", {
   K <- 2
-  m <- MultivariateGaussianCompositePostModel(
+  m <- MultivariateGaussianModel(
     mu_pre = c(0, 0),
     Sigma_pre = diag(K),
-    mean_box = cbind(c(-1, -1), c(2, 2)),
-    Sigma_post = diag(K),
+    mu_post = cbind(c(-1, -1), c(2, 2)),
+    Sigma_post = NULL,
     method = "predictable",
-    update_window = 2,
-    estimate_Sigma_post = TRUE
+    update_window = 2
   )
 
   h <- rbind(c(0.2, 0.1), c(0.3, 0.1), c(0.25, 0.2))

@@ -21,8 +21,6 @@ exportClasses(UniversalPortfolioCombiner)
 exportClasses(DGP)
 
 export(GaussianModel)
-export(GaussianCompositePostModel)
-export(MultivariateGaussianCompositePostModel)
 export(BernoulliModel)
 export(AR1Model)
 export(MultivariateGaussianModel)

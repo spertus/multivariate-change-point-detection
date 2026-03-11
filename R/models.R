@@ -81,8 +81,8 @@ setClass(
 .is_interval_spec <- function(x) is.numeric(x) && length(x) == 2L && all(is.finite(x)) && x[1] < x[2]
 .is_matrix_box_spec <- function(x) is.matrix(x) && is.numeric(x) && ncol(x) == 2L && all(is.finite(x)) && all(x[, 1] < x[, 2])
 
-.clamp <- function(x, lo, hi) min(max(x, lo), hi)
-.project_box <- function(v, box) pmin(pmax(v, box[, 1]), box[, 2])
+.clamp <- function(x, lo, hi) min(max(x, lo), hi) # clamp a scalar in an interval
+.project_box <- function(v, box) pmin(pmax(v, box[, 1]), box[, 2]) # clamp a vector in a box
 
 .logsumexp <- function(x) {
   x <- as.numeric(x)
@@ -185,9 +185,9 @@ setClass(
 # ---- constructors ----
 
 GaussianModel <- function(mean_pre,
-                          sd_pre = numeric(0),
+                          sd_pre = NULL,
                           mean_post,
-                          sd_post = numeric(0),
+                          sd_post = NULL,
                           method = c("predictable", "mixture"),
                           update_window = 20,
                           grid_size = 101,
@@ -290,59 +290,6 @@ MultivariateGaussianModel <- function(mu_pre,
       max_grid_points = as.integer(max_grid_points))
 }
 
-# Compatibility wrappers to avoid breaking older code
-GaussianCompositePostModel <- function(mean_pre,
-                                       sd_pre,
-                                       mean_interval,
-                                       sd_post = sd_pre,
-                                       method = c("mixture", "predictable"),
-                                       update_window = 20,
-                                       grid_size = 101,
-                                       prior_weights = NULL,
-                                       init_mean = NULL,
-                                       estimate_sd_post = FALSE,
-                                       min_sd = 1e-8,
-                                       name = "gaussian-composite-post") {
-  if (!isFALSE(estimate_sd_post)) sd_post <- numeric(0)
-  GaussianModel(mean_pre = mean_pre,
-                sd_pre = sd_pre,
-                mean_post = mean_interval,
-                sd_post = sd_post,
-                method = method,
-                update_window = update_window,
-                grid_size = grid_size,
-                prior_weights = if (is.null(prior_weights)) numeric(0) else prior_weights,
-                min_sd = min_sd,
-                name = name)
-}
-
-MultivariateGaussianCompositePostModel <- function(mu_pre,
-                                                   Sigma_pre,
-                                                   mean_box,
-                                                   Sigma_post = Sigma_pre,
-                                                   method = c("mixture", "predictable"),
-                                                   update_window = 20,
-                                                   grid_size = 5,
-                                                   prior_weights = NULL,
-                                                   init_mean = NULL,
-                                                   estimate_Sigma_post = FALSE,
-                                                   ridge = 1e-6,
-                                                   max_grid_points = 5000,
-                                                   name = "mv-gaussian-composite-post") {
-  if (!isFALSE(estimate_Sigma_post)) Sigma_post <- NULL
-  MultivariateGaussianModel(mu_pre = mu_pre,
-                            Sigma_pre = Sigma_pre,
-                            mu_post = mean_box,
-                            Sigma_post = Sigma_post,
-                            method = method,
-                            update_window = update_window,
-                            grid_size = grid_size,
-                            prior_weights = if (is.null(prior_weights)) numeric(0) else prior_weights,
-                            ridge = ridge,
-                            max_grid_points = max_grid_points,
-                            name = name)
-}
-
 BernoulliModel <- function(p_pre, p_post, name = "bernoulli") {
   stopifnot(length(p_pre) == 1L, length(p_post) == 1L, p_pre > 0, p_pre < 1, p_post > 0, p_post < 1)
   new("BernoulliModel", name = name, p_pre = p_pre, p_post = p_post)
@@ -355,8 +302,7 @@ AR1Model <- function(phi_pre, sigma_pre, mu_0 = 0, phi_post, sigma_post, mu_1 = 
       phi_post = phi_post, sigma_post = sigma_post, mu_post = mu_1, x0 = x0)
 }
 
-# ---- path builders for Gaussian families ----
-
+# ---- path builders for composite models ----
 .gaussian_mean_seq_post <- function(model, x) {
   n <- length(x)
   if (.is_scalar_spec(model@mean_post)) return(rep(as.numeric(model@mean_post), n))
@@ -584,15 +530,16 @@ setMethod("model_density", "AR1Model", function(object, x, regime = c("pre", "po
 # ---- likelihood increment methods ----
 
 setMethod("likelihood_increment", "GaussianModel", function(object, x, history = NULL, log = FALSE) {
+  # check if the model is simple and quickly compute if so
   simple_fast <- .is_scalar_spec(object@mean_pre) && .is_scalar_spec(object@mean_post) &&
     length(object@sd_pre) == 1L && length(object@sd_post) == 1L
-
   if (simple_fast) {
     out_log <- stats::dnorm(x, mean = as.numeric(object@mean_post), sd = object@sd_post, log = TRUE) -
       stats::dnorm(x, mean = as.numeric(object@mean_pre), sd = object@sd_pre, log = TRUE)
     return(if (log) out_log else pmax(exp(out_log), .Machine$double.eps))
   }
-
+  
+  # update the likelihood increments based on the history
   if ((is.null(history) || length(history) == 0L) && is.numeric(x) && length(x) > 1L && is.null(dim(x))) {
     out <- numeric(length(x))
     h <- numeric(0)
@@ -611,16 +558,17 @@ setMethod("likelihood_increment", "GaussianModel", function(object, x, history =
 })
 
 setMethod("likelihood_increment", "MultivariateGaussianModel", function(object, x, history = NULL, log = FALSE) {
+  # check if the model is simple and quickly compute increments if so 
   simple_fast <- (is.numeric(object@mu_pre) && is.null(dim(object@mu_pre))) &&
     (is.numeric(object@mu_post) && is.null(dim(object@mu_post))) &&
-    !is.null(object@Sigma_pre) && !is.null(object@Sigma_post)
-
+    !is.null(object@Sigma_pre) && !is.null(object@Sigma_post) 
   if (simple_fast) {
     out_log <- .mvnorm_log_density(x, mean = as.numeric(object@mu_post), Sigma = object@Sigma_post) -
       .mvnorm_log_density(x, mean = as.numeric(object@mu_pre), Sigma = object@Sigma_pre)
     return(if (log) out_log else pmax(exp(out_log), .Machine$double.eps))
   }
 
+  # compute increments under composite model
   x_row <- matrix(as.numeric(x), nrow = 1L)
   hh <- if (is.null(history) || length(history) == 0L) matrix(numeric(0), nrow = 0, ncol = ncol(x_row)) else as.matrix(history)
   xx <- rbind(hh, x_row)
