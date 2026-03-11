@@ -288,10 +288,14 @@ setMethod("model_density", "MultivariateGaussianModel", function(object, x, regi
 #   object  = Model subclass object
 #   x       = current observation(s): scalar/vector for univariate; vector/row-matrix for multivariate
 #   history = optional history object used by conditional models
+#   log     = logical; if TRUE return log-likelihood increments
 # outputs:
-#   numeric positive likelihood-ratio increments f_post(x)/f_pre(x)
-setMethod("likelihood_increment", "Model", function(object, x, history = NULL) {
+#   numeric positive likelihood-ratio increments f_post(x)/f_pre(x), or logs thereof
+setMethod("likelihood_increment", "Model", function(object, x, history = NULL, log = FALSE) {
   pre <- model_density(object, x = x, regime = "pre", history = history)
   post <- model_density(object, x = x, regime = "post", history = history)
+  if (log) {
+    return(log(pmax(post, .Machine$double.eps)) - log(pmax(pre, .Machine$double.eps)))
+  }
   pmax(post / pmax(pre, .Machine$double.eps), .Machine$double.eps)
 })

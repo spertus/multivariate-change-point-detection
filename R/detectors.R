@@ -163,6 +163,7 @@ setMethod("update_detector", "CUSUMDetector", function(object, evidence, t, stat
 #     alarm         = logical
 #     criterion     = character criterion used
 setMethod("run_detector", "Detector", function(object, evidence, log = FALSE) {
+  if(!log && any(evidence < 0)){stop("evidence is negative but log is false!")}
   .assert_numeric_vector(evidence, "evidence")
   n <- length(evidence)
   stat <- numeric(n)

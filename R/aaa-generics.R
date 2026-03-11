@@ -17,9 +17,10 @@ setGeneric("model_density", function(object, x, regime = c("pre", "post"), histo
 #   object  = Model subclass instance
 #   x       = numeric scalar/vector, new observation(s)
 #   history = optional numeric vector of past observations
+#   log     = logical; if TRUE return log-likelihood increments
 # outputs:
-#   numeric scalar/vector with strictly positive increments
-setGeneric("likelihood_increment", function(object, x, history = NULL) {
+#   numeric scalar/vector of increments (or log-increments if log=TRUE)
+setGeneric("likelihood_increment", function(object, x, history = NULL, log = FALSE) {
   standardGeneric("likelihood_increment")
 })
 

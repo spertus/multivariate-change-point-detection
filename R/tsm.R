@@ -38,10 +38,9 @@ setMethod("compute_increments", "SimpleVsSimpleTSM", function(object, x, log = F
     history <- numeric(0)
 
     for (t in seq_len(n)) {
-      out[t] <- likelihood_increment(object@model, x = x[t], history = history)
+      out[t] <- likelihood_increment(object@model, x = x[t], history = history, log = log)
       history <- c(history, x[t])
     }
-    if (log) return(log(pmax(out, .Machine$double.eps)))
     return(out)
   }
 
@@ -57,11 +56,11 @@ setMethod("compute_increments", "SimpleVsSimpleTSM", function(object, x, log = F
   history <- matrix(numeric(0), nrow = 0, ncol = ncol(x))
 
   for (t in seq_len(n)) {
-    out[t] <- likelihood_increment(object@model, x = x[t, ], history = history)
+    out[t] <- likelihood_increment(object@model, x = x[t, ], history = history, log = log)
     history <- rbind(history, x[t, , drop = FALSE])
   }
 
-  if (log) log(pmax(out, .Machine$double.eps)) else out
+  out
 })
 
 # Method: compute_tsm for SimpleVsSimpleTSM
@@ -72,6 +71,6 @@ setMethod("compute_increments", "SimpleVsSimpleTSM", function(object, x, log = F
 # outputs:
 #   numeric length-N vector with cumulative TSM path (or log-TSM path)
 setMethod("compute_tsm", "SimpleVsSimpleTSM", function(object, x, log = FALSE) {
-  inc <- compute_increments(object, x, log = FALSE)
-  increments_to_tsm(inc, initial = object@initial, running_max = TRUE, log = log)
+  inc <- compute_increments(object, x, log = log)
+  increments_to_tsm(inc, initial = object@initial, running_max = FALSE, log = log)
 })

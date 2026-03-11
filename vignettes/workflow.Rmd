@@ -177,8 +177,6 @@ if (is.finite(det_out_2$stopping_time)) {
 par(old_par)
 ```
 
-
-
 ## 5. Estimate operating characteristics by simulation
 
 ```{r}
@@ -206,6 +204,9 @@ This returns Monte Carlo summaries including:
 - `ADD`: average detection delay after the change
 
 ## Multivariate detection
+
+Simple-vs-simple multivariate detection. 
+Note that when the alternative is mis-specified, the helper TSM does not grow and the detector can be very inefficient. 
 
 ```{r}
 K <- 3 # number of streams
@@ -237,13 +238,13 @@ model_miss <- MultivariateGaussianModel(
 )
 
 # instantiate TSMs and compute increments
-inc_true <- compute_increments(SimpleVsSimpleTSM(model_true), x)
-inc_miss <- compute_increments(SimpleVsSimpleTSM(model_miss), x)
+inc_true <- compute_increments(SimpleVsSimpleTSM(model_true), x, log = TRUE)
+inc_miss <- compute_increments(SimpleVsSimpleTSM(model_miss), x, log = TRUE)
 
 # instantiate detector and compute sequence
 sr <-  ShiryaevRobertsDetector(alpha = 0.001, criterion = "ARL")
-det_out_true <- run_detector(sr, inc_true)
-det_out_miss <- run_detector(sr, inc_miss)
+det_out_true <- run_detector(sr, inc_true, log = TRUE)
+det_out_miss <- run_detector(sr, inc_miss, log = TRUE)
 ```
 
 ```{r fig.cap="Multivariate data, helper TSMs, and detector statistics (true vs mis-specified alternative)."}
@@ -258,11 +259,11 @@ legend("topleft",
        col = seq_len(ncol(x)), lty = 1, lwd = 1.5, cex = 0.8, bty = "n")
 
 # Panel 2: helper TSMs from increments
-tsm_true <- increments_to_tsm(inc_true)
-tsm_miss <- increments_to_tsm(inc_miss)
-plot(log(tsm_true), type = "l", lwd = 2, col = "darkgreen",
-     xlab = "time", ylab = "log helper TSM", main = "Helper TSMs", ylim = c())
-lines(log(tsm_miss), lwd = 2, col = "darkorange")
+tsm_true <- compute_tsm(SimpleVsSimpleTSM(model_true), x, log = TRUE)
+tsm_miss <- compute_tsm(SimpleVsSimpleTSM(model_miss), x, log = TRUE)
+plot(tsm_true, type = "l", lwd = 2, col = "darkgreen",
+     xlab = "time", ylab = "log helper TSM", main = "Helper TSMs", ylim = c(-500, 0))
+lines(tsm_miss, lwd = 2, col = "darkorange")
 abline(v = dgp_mvn@nu, lty = 2, col = "gray40")
 legend("topleft",
        legend = c("true model", "mis-specified model"),
@@ -270,9 +271,9 @@ legend("topleft",
        lty = 1, lwd = 2, cex = 0.8, bty = "n")
 
 # Panel 3: detector statistics
-plot(log(det_out_true$statistic), type = "l", lwd = 2, col = "darkgreen",
+plot(det_out_true$statistic, type = "l", lwd = 2, col = "darkgreen",
      xlab = "time", ylab = "log R_t", main = "S-R Statistics")
-lines(log(det_out_miss$statistic), lwd = 2, col = "darkorange")
+lines(det_out_miss$statistic, lwd = 2, col = "darkorange")
 abline(h = log(sr@threshold), lty = 3, col = "gray40")
 abline(v = dgp_mvn@nu, lty = 2, col = "gray40")
 if (is.finite(det_out_true$stopping_time)) {
@@ -288,3 +289,9 @@ legend("topleft",
 
 par(old_par)
 ```
+
+
+## Composite Alternative 
+
+
+

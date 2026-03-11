@@ -28,19 +28,20 @@
 # Helper: increments_to_tsm
 # purpose: construct a TSM-style path from one-step increments
 # inputs:
-#   increments  = numeric length-N vector of positive increments
+#   increments  = numeric length-N vector of increments (or log-increments if log=TRUE)
 #   initial     = numeric scalar initial wealth (default 1)
 #   running_max = logical; if TRUE, return running max of cumulative product
-#   log         = logical; if TRUE, compute and return everything on a log scale
+#   log         = logical; if TRUE, interpret `increments` as log-increments and accumulate by summation
 # outputs:
 #   numeric length-N vector with cumulative path
 increments_to_tsm <- function(increments, initial = 1, running_max = FALSE, log = FALSE) {
   .assert_numeric_vector(increments, "increments")
+  if(!log && any(increments < 0)){stop("increments are negative but log is FALSE!")}
   if (length(initial) != 1L || !is.finite(initial) || initial <= 0) {
     stop("`initial` must be a positive finite scalar.", call. = FALSE)
   }
   if (log) {
-    path <- log(initial) + cumsum(log(pmax(increments, .Machine$double.eps)))
+    path <- log(initial) + cumsum(increments)
   } else {
     path <- initial * cumprod(pmax(increments, .Machine$double.eps))
   }
