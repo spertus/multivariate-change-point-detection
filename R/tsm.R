@@ -5,31 +5,37 @@
 #   initial = numeric scalar, initial wealth/evidence
 setClass("TestSupermartingale", slots = c(model = "Model", initial = "numeric"))
 
-# Class: SimpleVsSimpleTSM
-# purpose: concrete TSM for simple-vs-simple pre/post models
-# slots: inherited from TestSupermartingale
-setClass("SimpleVsSimpleTSM", contains = "TestSupermartingale")
+# Class: TSM
+# purpose: generic TSM class that can be used with simple or composite models
+setClass("TSM", contains = "TestSupermartingale")
 
-# Constructor: SimpleVsSimpleTSM
+# Backward-compatible alias class
+setClass("SimpleVsSimpleTSM", contains = "TSM")
+
+# Constructor: TSM
 # inputs:
 #   model   = Model subclass instance
 #   initial = numeric scalar > 0
 # outputs:
-#   SimpleVsSimpleTSM object
-SimpleVsSimpleTSM <- function(model, initial = 1) {
+#   TSM object
+TSM <- function(model, initial = 1) {
   stopifnot(is(model, "Model"), length(initial) == 1L, initial > 0)
-  new("SimpleVsSimpleTSM", model = model, initial = initial)
+  new("TSM", model = model, initial = initial)
 }
 
-# Method: compute_tsm for SimpleVsSimpleTSM
-# Method: compute_increments for SimpleVsSimpleTSM
+# Backward-compatible constructor alias
+SimpleVsSimpleTSM <- function(model, initial = 1) {
+  TSM(model = model, initial = initial)
+}
+
+# Method: compute_increments for TSM
 # inputs:
-#   object = SimpleVsSimpleTSM object
+#   object = TSM object
 #   x      = numeric vector (univariate stream) or matrix n-by-K (multivariate stream)
 #   log    = logical; if TRUE return log-increments
 # outputs:
 #   numeric length-N vector with one-step increments (or log-increments)
-setMethod("compute_increments", "SimpleVsSimpleTSM", function(object, x, log = FALSE) {
+setMethod("compute_increments", "TSM", function(object, x, log = FALSE) {
   if (is.null(dim(x))) {
     .assert_numeric_vector(as.numeric(x), "x")
     x <- as.numeric(x)
@@ -63,14 +69,14 @@ setMethod("compute_increments", "SimpleVsSimpleTSM", function(object, x, log = F
   out
 })
 
-# Method: compute_tsm for SimpleVsSimpleTSM
+# Method: compute_tsm for TSM
 # inputs:
-#   object = SimpleVsSimpleTSM object
-#   x      = numeric vector, observed sequence
+#   object = TSM object
+#   x      = numeric vector or matrix sequence
 #   log    = logical; if TRUE return log-TSM path
 # outputs:
 #   numeric length-N vector with cumulative TSM path (or log-TSM path)
-setMethod("compute_tsm", "SimpleVsSimpleTSM", function(object, x, log = FALSE) {
+setMethod("compute_tsm", "TSM", function(object, x, log = FALSE) {
   inc <- compute_increments(object, x, log = log)
-  increments_to_tsm(inc, initial = object@initial, running_max = FALSE, log = log)
+  increments_to_tsm(inc, initial = object@initial, running_max = TRUE, log = log)
 })

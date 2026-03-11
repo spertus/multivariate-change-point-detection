@@ -77,3 +77,46 @@ test_that("SR detector log mode matches standard mode for stopping time", {
   expect_equal(out_log$stopping_time, out_std$stopping_time)
   expect_equal(exp(out_log$statistic), out_std$statistic, tolerance = 1e-8)
 })
+
+test_that("composite Gaussian post model works through increment pipeline", {
+  model <- GaussianCompositePostModel(
+    mean_pre = 0,
+    sd_pre = 1,
+    mean_interval = c(-1, 2),
+    sd_post = 1,
+    method = "predictable",
+    update_window = 5
+  )
+  tsm <- SimpleVsSimpleTSM(model)
+  x <- c(rnorm(50, 0, 1), rnorm(50, 1.5, 1))
+  inc <- compute_increments(tsm, x)
+  det <- ShiryaevRobertsDetector(alpha = 0.1, criterion = "ARL")
+  out <- run_detector(det, inc)
+
+  expect_equal(length(inc), length(x))
+  expect_true(all(is.finite(inc)))
+  expect_true(is.finite(out$stopping_time))
+})
+
+test_that("multivariate composite Gaussian model works through joint increment pipeline", {
+  K <- 2
+  model <- MultivariateGaussianCompositePostModel(
+    mu_pre = rep(0, K),
+    Sigma_pre = diag(K),
+    mean_box = cbind(rep(-1, K), rep(2, K)),
+    Sigma_post = diag(K),
+    method = "predictable",
+    update_window = 5,
+    estimate_Sigma_post = TRUE
+  )
+  tsm <- SimpleVsSimpleTSM(model)
+  x <- cbind(c(rnorm(40, 0, 1), rnorm(40, 1.5, 1)),
+             c(rnorm(40, 0, 1), rnorm(40, 0.5, 1)))
+  inc <- compute_increments(tsm, x)
+  det <- ShiryaevRobertsDetector(alpha = 0.1, criterion = "ARL")
+  out <- run_detector(det, inc)
+
+  expect_equal(length(inc), nrow(x))
+  expect_true(all(is.finite(inc)))
+  expect_true(is.finite(out$stopping_time))
+})

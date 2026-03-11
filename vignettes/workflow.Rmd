@@ -291,7 +291,23 @@ par(old_par)
 ```
 
 
-## Composite Alternative 
+## Composite models
+
+## Application to commodity prices
+
+```{r}
+library(quantmod)
+
+getSymbols(c("PMAIZMTUSDM", "PSOYBUSDM", "PWHEAMTUSDM", "DCOILWTICO"), src = "FRED", 
+           from = "2005-01-01", 
+           to = "2026-01-01")
+
+# monthly prices
+prices <- apply.monthly(merge(PMAIZMTUSDM, PSOYBUSDM, PWHEAMTUSDM, DCOILWTICO), colMeans, na.rm = T)
+colnames(prices) <- c("corn", "soybean", "wheat", "oil")
+returns <- diff(log(prices))
+plot(returns, legend.loc = "topright")
+```
 
 
 
