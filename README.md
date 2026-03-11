@@ -2,7 +2,7 @@
 
 `multichangepoints` is an S4-first R package scaffold for modular sequential change-point detection with:
 
-- model classes (`GaussianModel`, `BernoulliModel`, `AR1Model`)
+- model classes (`GaussianModel`, `MultivariateGaussianModel`, `BernoulliModel`, `AR1Model`)
 - test supermartingales (`SimpleVsSimpleTSM`)
 - detectors (`ShiryaevRobertsDetector`, `CUSUMDetector`)
 - multistream combiners (`AverageCombiner`, `ProductCombiner`, `UniversalPortfolioCombiner`)
