@@ -3,7 +3,7 @@
 `multichangepoints` is an S4-first R package scaffold for modular sequential change-point detection with:
 
 - model classes (`GaussianModel`, `MultivariateGaussianModel`, `BernoulliModel`, `AR1Model`)
-- test supermartingales (`SimpleVsSimpleTSM`)
+- test supermartingales (`TSM`)
 - detectors (`ShiryaevRobertsDetector`, `CUSUMDetector`)
 - multistream combiners (`AverageCombiner`, `ProductCombiner`, `UniversalPortfolioCombiner`)
 - simulation helpers (`DGP`, `run_simulation`)
@@ -15,7 +15,7 @@ library(multichangepoints)
 set.seed(20260305)
 
 model <- GaussianModel(mean_pre = 0, sd_pre = 1, mean_post = 1, sd_post = 1)
-tsm <- SimpleVsSimpleTSM(model)
+tsm <- TSM(model)
 
 dgp <- DGP(
   generator = default_gaussian_dgp,
