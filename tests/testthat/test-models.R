@@ -50,3 +50,92 @@ test_that("Multivariate Gaussian model returns scalar density and valid incremen
   expect_true(is.numeric(inc) && length(inc) == 1)
   expect_gt(inc, 0)
 })
+
+test_that(".predictable_mean_estimate returns mean when inside bounds", {
+  x <- rnorm(100, 2, 1)
+  # this should return the mean of x
+  lag_mean <- .predictable_mean_estimate(
+    history = x,
+    update_window = 5,
+    lower = 0,
+    upper = 3,
+    init_mean = 0
+  )
+  # this should hit the upper limit of 1
+  lag_bound_mean <- .predictable_mean_estimate(
+    history = x,
+    update_window = 5,
+    lower = 0,
+    upper = 1,
+    init_mean = 0
+  )
+  expect_true(lag_mean == mean(x))
+  expect_true(lag_bound_mean == 1)
+})
+
+
+test_that("Gaussian composite post model (predictable) respects update window", {
+  m <- GaussianModel(
+    mean_pre = 0,
+    sd_pre = 1,
+    mean_post = c(-1, 2),
+    sd_post = 1,
+    method = "predictable",
+    update_window = 2
+  )
+
+  # At t = 4 (history length 3), update_window = 2 => estimate based on first 2 values only.
+  h <- c(2, 2, -1)
+  inc <- likelihood_increment(m, x = 2, history = h)
+  ref <- dnorm(2, mean = 2, sd = 1) / dnorm(2, mean = 0, sd = 1)
+  expect_equal(inc, ref, tolerance = 1e-10)
+})
+
+test_that("Gaussian composite post model (mixture) returns finite positive increment", {
+  m <- GaussianModel(
+    mean_pre = 0,
+    sd_pre = 1,
+    mean_post = c(-1, 1),
+    sd_post = 1,
+    method = "mixture",
+    grid_size = 5
+  )
+
+  inc <- likelihood_increment(m, x = 0.3, history = c(-0.1, 0.2))
+  log_inc <- likelihood_increment(m, x = 0.3, history = c(-0.1, 0.2), log = TRUE)
+  expect_gt(inc, 0)
+  expect_true(is.finite(log_inc))
+  expect_equal(log(inc), log_inc, tolerance = 1e-10)
+})
+
+test_that("Gaussian composite post model can estimate post-change sd from lagged data", {
+  m <- GaussianModel(
+    mean_pre = 0,
+    sd_pre = 1,
+    mean_post = c(-1, 2),
+    sd_post = numeric(0),
+    method = "predictable",
+    update_window = 3
+  )
+
+  inc <- likelihood_increment(m, x = 2, history = c(2, 2, 2, -1))
+  expect_true(is.finite(inc))
+  expect_gt(inc, 0)
+})
+
+test_that("Multivariate Gaussian composite post model supports box constraints and unknown Sigma", {
+  K <- 2
+  m <- MultivariateGaussianModel(
+    mu_pre = c(0, 0),
+    Sigma_pre = diag(K),
+    mu_post = cbind(c(-1, -1), c(2, 2)),
+    Sigma_post = NULL,
+    method = "predictable",
+    update_window = 2
+  )
+
+  h <- rbind(c(0.2, 0.1), c(0.3, 0.1), c(0.25, 0.2))
+  inc <- likelihood_increment(m, x = c(1, 1), history = h)
+  expect_true(is.finite(inc))
+  expect_gt(inc, 0)
+})
