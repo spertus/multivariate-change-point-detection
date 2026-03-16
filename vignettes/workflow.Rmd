@@ -213,18 +213,19 @@ Note that when the alternative is mis-specified, the helper TSM does not grow an
 
 ```{r}
 K <- 3 # number of streams
-N <- 250 # length of streams
+N <- 50 # length of streams
 dgp_mvn <- DGP(
   generator = default_multivariate_gaussian_dgp,
   pre_params = list(mu = c(0, 0, 0), Sigma = diag(K)), # parameters pre-change
   post_params = list(mu = c(1, 0, 0), Sigma = diag(K)), # parameters post-change
-  nu = 120, # change-point
+  nu = 25, # change-point
   name = "mv-gauss-change"
 )
 
 # generate data from the dgp
 x <- generate_stream(dgp_mvn, N = N, K = K)
 
+# simple vs simple
 # true alternative
 model_true <- MultivariateGaussianModel(
   mu_pre = c(0, 0, 0),
@@ -239,15 +240,37 @@ model_miss <- MultivariateGaussianModel(
   mu_post = c(1, 1, 1),
   Sigma_post = diag(K)
 )
+# composite post-change model
+# estimating the post-change mean
+model_comp_pred <- MultivariateGaussianModel(
+  mu_pre = c(0, 0, 0),
+  Sigma_pre = diag(K),
+  mu_post = rbind(c(0,1), c(0,1), c(0,1)),
+  Sigma_post = diag(K),
+  method = "predictable"
+)
+# mixing over the post-change mean
+model_comp_mix <- MultivariateGaussianModel(
+  mu_pre = c(0, 0, 0),
+  Sigma_pre = diag(K),
+  mu_post = rbind(c(0,1), c(0,1), c(0,1)),
+  Sigma_post = diag(K),
+  method = "mixture",
+  mix_weight_adapt = "none"
+)
 
 # instantiate TSMs and compute increments
-inc_true <- compute_increments(SimpleVsSimpleTSM(model_true), x, log = TRUE)
-inc_miss <- compute_increments(SimpleVsSimpleTSM(model_miss), x, log = TRUE)
+inc_true <- compute_increments(TSM(model_true), x, log = TRUE)
+inc_miss <- compute_increments(TSM(model_miss), x, log = TRUE)
+inc_comp_pred <- compute_increments(TSM(model_comp_pred), x, log = TRUE)
+inc_comp_mix <- compute_increments(TSM(model_comp_mix), x, log = TRUE)
 
 # instantiate detector and compute sequence
 sr <-  ShiryaevRobertsDetector(alpha = 0.001, criterion = "ARL")
 det_out_true <- run_detector(sr, inc_true, log = TRUE)
 det_out_miss <- run_detector(sr, inc_miss, log = TRUE)
+det_out_comp_pred <- run_detector(sr, inc_comp_pred, log = TRUE)
+det_out_comp_mix <- run_detector(sr, inc_comp_mix, log = TRUE)
 ```
 
 ```{r fig.cap="Multivariate data, helper TSMs, and detector statistics (true vs mis-specified alternative)."}
@@ -264,19 +287,25 @@ legend("topleft",
 # Panel 2: helper TSMs from increments
 tsm_true <- compute_tsm(TSM(model_true), x, log = TRUE)
 tsm_miss <- compute_tsm(TSM(model_miss), x, log = TRUE)
+tsm_comp_pred <- increments_to_tsm(inc_comp_pred, log = TRUE)
+tsm_comp_mix <- increments_to_tsm(inc_comp_mix, log = TRUE)
 plot(tsm_true, type = "l", lwd = 2, col = "darkgreen",
      xlab = "time", ylab = "log helper TSM", main = "Helper TSMs", ylim = range(c(tsm_true, tsm_miss)))
 lines(tsm_miss, lwd = 2, col = "darkorange")
+lines(tsm_comp_pred, lwd = 2, col = "steelblue")
+lines(tsm_comp_mix, lwd = 2, col = "firebrick")
 abline(v = dgp_mvn@nu, lty = 2, col = "gray40")
 legend("topleft",
-       legend = c("true model", "mis-specified model"),
-       col = c("darkgreen", "darkorange"),
+       legend = c("true model", "mis-specified model", "predictable", "mixture"),
+       col = c("darkgreen", "darkorange", "steelblue","firebrick"),
        lty = 1, lwd = 2, cex = 0.8, bty = "n")
 
 # Panel 3: detector statistics
 plot(det_out_true$statistic, type = "l", lwd = 2, col = "darkgreen",
      xlab = "time", ylab = "log R_t", main = "S-R Statistics")
 lines(det_out_miss$statistic, lwd = 2, col = "darkorange")
+lines(det_out_comp_pred$statistic, lwd = 2, col = "steelblue")
+lines(det_out_comp_mix$statistic, lwd = 2, col = "firebrick")
 abline(h = log(sr@threshold), lty = 3, col = "gray40")
 abline(v = dgp_mvn@nu, lty = 2, col = "gray40")
 if (is.finite(det_out_true$stopping_time)) {
@@ -285,9 +314,15 @@ if (is.finite(det_out_true$stopping_time)) {
 if (is.finite(det_out_miss$stopping_time)) {
   abline(v = det_out_miss$stopping_time, lwd = 1.5, col = "darkorange")
 }
+if (is.finite(det_out_comp_pred$stopping_time)) {
+  abline(v = det_out_comp_pred$stopping_time, lwd = 1.5, col = "steelblue")
+}
+if (is.finite(det_out_comp_mix$stopping_time)) {
+  abline(v = det_out_comp_mix$stopping_time, lwd = 1.5, col = "firebrick")
+}
 legend("topleft",
-       legend = c("true model", "mis-specified model"),
-       col = c("darkgreen", "darkorange"),
+       legend = c("true model", "mis-specified model", "predictable", "mixture"),
+       col = c("darkgreen", "darkorange", "steelblue", "firebrick"),
        lty = 1, lwd = 2, cex = 0.8, bty = "n")
 
 par(old_par)
@@ -301,13 +336,14 @@ par(old_par)
 ```{r}
 library(quantmod)
 
-getSymbols(c("PMAIZMTUSDM", "PSOYBUSDM", "PWHEAMTUSDM", "DCOILWTICO"), src = "FRED", 
+# pull some prices, could add other commodities, oil, etc later
+getSymbols(c("PMAIZMTUSDM", "PSOYBUSDM", "PWHEAMTUSDM"), src = "FRED", 
            from = "2005-01-01", 
            to = "2026-01-01")
 
 # monthly prices
-prices <- apply.monthly(merge(PMAIZMTUSDM, PSOYBUSDM, PWHEAMTUSDM, DCOILWTICO), colMeans, na.rm = T)
-colnames(prices) <- c("corn", "soybean", "wheat", "oil")
+prices <- apply.monthly(merge(PMAIZMTUSDM, PSOYBUSDM, PWHEAMTUSDM), colMeans, na.rm = T)
+colnames(prices) <- c("corn", "soybean", "wheat")
 returns <- diff(log(prices))
 plot(returns, legend.loc = "topright")
 ```

@@ -39,6 +39,14 @@ setMethod("compute_increments", "TSM", function(object, x, log = FALSE) {
   if (is.null(dim(x))) {
     .assert_numeric_vector(as.numeric(x), "x")
     x <- as.numeric(x)
+
+    # Fast path: univariate Gaussian mixture post-change.
+    if (is(object@model, "GaussianModel") &&
+        .is_interval_spec(object@model@mean_post) &&
+        object@model@method == "mixture") {
+      return(.gaussian_mix_increments_fast(object@model, x, log = log))
+    }
+
     n <- length(x)
     out <- numeric(n)
     history <- numeric(0)
@@ -57,6 +65,13 @@ setMethod("compute_increments", "TSM", function(object, x, log = FALSE) {
     stop("Matrix input requires a model inheriting from `MultivariateModel`.", call. = FALSE)
   }
 
+  # Fast path: multivariate Gaussian mixture post-change.
+  if (is(object@model, "MultivariateGaussianModel") &&
+      .is_matrix_box_spec(object@model@mu_post) &&
+      object@model@method == "mixture") {
+    return(.mv_gaussian_mix_increments_fast(object@model, x, log = log))
+  }
+
   n <- nrow(x)
   out <- numeric(n)
   history <- matrix(numeric(0), nrow = 0, ncol = ncol(x))
@@ -65,7 +80,7 @@ setMethod("compute_increments", "TSM", function(object, x, log = FALSE) {
     out[t] <- likelihood_increment(object@model, x = x[t, ], history = history, log = log)
     history <- rbind(history, x[t, , drop = FALSE])
   }
-
+  
   out
 })
 
