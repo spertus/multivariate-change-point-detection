@@ -145,13 +145,8 @@ default_multivariate_gaussian_dgp <- function(N,
     stop("Covariance matrices must be symmetric positive definite.", call. = FALSE)
   }
 
-  draw_mvn <- function(n, mu, Sigma) {
-    Z <- matrix(stats::rnorm(n * length(mu)), nrow = n, ncol = length(mu))
-    Z %*% chol(Sigma) + matrix(rep(mu, each = n), nrow = n) # stretch by cholesky, shift by mu
-  }
-
-  pre <- draw_mvn(N, mu_pre, Sigma_pre)
-  post <- draw_mvn(N, mu_post, Sigma_post)
+  pre <- mvtnorm::rmvnorm(N, mean = mu_pre, sigma = Sigma_pre)
+  post <- mvtnorm::rmvnorm(N, mean = mu_post, sigma = Sigma_post)
 
   if (is.finite(nu) && nu < N) {
     rbind(pre[1:nu, , drop = FALSE], post[(nu + 1):N, , drop = FALSE])

@@ -11,16 +11,13 @@ setClass("UnivariateModel", contains = "Model")
 setClass("MultivariateModel", contains = "Model")
 
 # Class: GaussianModel
-# purpose: unified univariate Gaussian model supporting simple/composite pre/post means and optional unknown sd
+# purpose: unified univariate Gaussian model supporting simple/composite pre/post means
 # slots:
 #   mean_pre, mean_post = scalar (simple) or length-2 interval c(a,b) (composite)
-#   sd_pre, sd_post     = scalar (>0) or empty (estimate from data)
-#   method              = for composite post mean: "predictable" or "mixture"
-#   update_window       = update frequency for predictable estimators
+#   sd_pre, sd_post     = scalar (>0) or empty (estimate via MLE)
+#   method              = "predictable" or "mixture" for composite post-change mean
 #   grid_size           = grid points for mixture approximation
-#   prior_weights       = optional weights for post-mean grid (empty => uniform)
-#   mix_weight_adapt     = "windowed" or "none" for mixture-weight adaptation
-#   mix_update_window   = positive integer block size for windowed mixture updates
+#   prior_weights       = optional fixed mixture weights over post-change grid
 #   min_sd              = floor for sd estimates
 setClass(
   "GaussianModel",
@@ -31,28 +28,22 @@ setClass(
     sd_pre = "numeric",
     sd_post = "numeric",
     method = "character",
-    update_window = "numeric",
     grid_size = "numeric",
     prior_weights = "numeric",
-    mix_weight_adapt = "character",
-    mix_update_window = "numeric",
     min_sd = "numeric"
   )
 )
 
 # Class: MultivariateGaussianModel
-# purpose: unified multivariate Gaussian model supporting simple/composite pre/post means and optional unknown covariance
+# purpose: unified multivariate Gaussian model supporting simple/composite pre/post means
 # slots:
-#   mu_pre, mu_post     = vector length K (simple) or K-by-2 box matrix (composite)
-#   Sigma_pre, Sigma_post = K-by-K covariance matrix or NULL (estimate from data)
-#   method              = for composite post mean box: "predictable" or "mixture"
-#   update_window       = update frequency for predictable estimators
-#   grid_size           = points per axis for mixture grid approximation
-#   prior_weights       = optional weights for mean grid (empty => uniform)
-#   mix_weight_adapt     = "windowed" or "none" for mixture-weight adaptation
-#   mix_update_window   = positive integer block size for windowed mixture updates
-#   ridge               = ridge added to covariance estimates for numerical stability
-#   max_grid_points     = cap on mixture grid size
+#   mu_pre, mu_post       = vector length K (simple) or K-by-2 box matrix (composite)
+#   Sigma_pre, Sigma_post = K-by-K covariance matrix or NULL (estimate via MLE)
+#   method                = "predictable" or "mixture" for composite post-change mean box
+#   grid_size             = points per axis for mixture grid approximation
+#   prior_weights         = optional fixed mixture weights over mean grid
+#   ridge                 = small ridge for numerical PD covariance handling
+#   max_grid_points       = cap on mixture grid size
 setClass(
   "MultivariateGaussianModel",
   contains = "MultivariateModel",
@@ -62,336 +53,409 @@ setClass(
     Sigma_pre = "ANY",
     Sigma_post = "ANY",
     method = "character",
-    update_window = "numeric",
     grid_size = "numeric",
     prior_weights = "numeric",
-    mix_weight_adapt = "character",
-    mix_update_window = "numeric",
     ridge = "numeric",
     max_grid_points = "numeric"
   )
 )
 
 # Class: BernoulliModel
+# purpose: Bernoulli pre/post model
 setClass("BernoulliModel", contains = "UnivariateModel", slots = c(p_pre = "numeric", p_post = "numeric"))
 
 # Class: AR1Model
+# purpose: Gaussian AR(1) model with intercept parameterization
 setClass(
   "AR1Model",
   contains = "UnivariateModel",
-  slots = c(phi_pre = "numeric", sigma_pre = "numeric", mu_pre = "numeric",
-            phi_post = "numeric", sigma_post = "numeric", mu_post = "numeric", x0 = "numeric")
+  slots = c(
+    phi_pre = "numeric", sigma_pre = "numeric", mu_pre = "numeric",
+    phi_post = "numeric", sigma_post = "numeric", mu_post = "numeric", x0 = "numeric"
+  )
 )
 
-# ---- helpers ----
+# ---- helper functions ----
 
+# helper: identify scalar numeric model specifications
 .is_scalar_spec <- function(x) is.numeric(x) && length(x) == 1L && is.finite(x)
+
+# helper: identify univariate interval specifications c(a, b), a < b
 .is_interval_spec <- function(x) is.numeric(x) && length(x) == 2L && all(is.finite(x)) && x[1] < x[2]
-.is_matrix_box_spec <- function(x) is.matrix(x) && is.numeric(x) && ncol(x) == 2L && all(is.finite(x)) && all(x[, 1] < x[, 2])
 
-.clamp <- function(x, lo, hi) min(max(x, lo), hi) # clamp a scalar in an interval
-.project_box <- function(v, box) pmin(pmax(v, box[, 1]), box[, 2]) # clamp a vector in a box
-
-.logsumexp <- function(x) {
-  x <- as.numeric(x)
-  if (length(x) == 0L) return(-Inf)
-  m <- max(x)
-  if (!is.finite(m)) return(m)
-  m + log(sum(exp(x - m)))
+# helper: identify K-by-2 box constraints for multivariate means
+.is_matrix_box_spec <- function(x) {
+  is.matrix(x) && is.numeric(x) && ncol(x) == 2L && all(is.finite(x)) && all(x[, 1] < x[, 2])
 }
 
-.gaussian_grid <- function(interval, grid_size) seq(interval[1], interval[2], length.out = as.integer(grid_size))
+# helper: clamp scalar x into [lo, hi]
+.clamp <- function(x, lo, hi) min(max(x, lo), hi)
 
+# helper: project vector v into a K-by-2 box
+.project_box <- function(v, box) pmin(pmax(v, box[, 1]), box[, 2])
+
+# helper: geometric grid on an interval for mixture Riemann sums
+.gaussian_grid <- function(interval, grid_size) {
+  seq(interval[1], interval[2], length.out = as.integer(grid_size))
+}
+
+# helper: Cartesian product grid on a K-dimensional box for mixture Riemann sums
 .mv_box_grid <- function(box, grid_size, max_grid_points) {
-  axes <- lapply(seq_len(nrow(box)), function(j) seq(box[j, 1], box[j, 2], length.out = as.integer(grid_size)))
-  g <- as.matrix(expand.grid(axes, KEEP.OUT.ATTRS = FALSE, stringsAsFactors = FALSE))
-  if (nrow(g) > max_grid_points) {
-    idx <- unique(round(seq(1, nrow(g), length.out = max_grid_points)))
-    g <- g[idx, , drop = FALSE]
+  axes <- lapply(seq_len(nrow(box)), function(j) {
+    seq(box[j, 1], box[j, 2], length.out = as.integer(grid_size))
+  })
+
+  grid <- as.matrix(expand.grid(axes, KEEP.OUT.ATTRS = FALSE, stringsAsFactors = FALSE))
+  if (nrow(grid) > max_grid_points) {
+    idx <- unique(round(seq(1, nrow(grid), length.out = max_grid_points)))
+    grid <- grid[idx, , drop = FALSE]
   }
-  g
+  grid
 }
 
-.gaussian_sd_mle <- function(x, mu, min_sd = 1e-8) {
-  if (length(x) == 0L) return(min_sd)
-  s <- sqrt(mean((x - mu)^2))
-  if (!is.finite(s) || s <= 0) min_sd else max(s, min_sd)
+# helper: normalize fixed mixture weights; defaults to flat weights
+.normalize_weights <- function(weights, n_points) {
+  if (length(weights) == 0L) {
+    return(rep(1 / n_points, n_points))
+  }
+  if (length(weights) != n_points) {
+    stop("`prior_weights` must be empty or have one entry per grid point.", call. = FALSE)
+  }
+  if (any(weights < 0) || sum(weights) <= 0) {
+    stop("`prior_weights` must be nonnegative and sum to a positive value.", call. = FALSE)
+  }
+  weights / sum(weights)
 }
 
-.predictable_mean_estimate <- function(history, update_window, lower, upper, init_mean) {
-  t <- length(history) + 1L
-  n_used <- ((t - 1L) %/% update_window) * update_window
-  if (n_used <= 0L) return(.clamp(init_mean, lower, upper))
-  .clamp(mean(history[seq_len(n_used)]), lower, upper)
+# helper: convert vector/row inputs to an n-by-k matrix and preserve scalar-row behavior
+.mv_as_matrix <- function(x, k = NULL) {
+  if (is.null(dim(x))) {
+    x_vec <- as.numeric(x)
+    if (!is.null(k) && length(x_vec) != k) {
+      stop("Observation dimension does not match model dimension.", call. = FALSE)
+    }
+    return(matrix(x_vec, nrow = 1L))
+  }
+
+  x_mat <- as.matrix(x)
+  if (!is.null(k) && ncol(x_mat) != k) {
+    stop("Observation dimension does not match model dimension.", call. = FALSE)
+  }
+  x_mat
 }
 
-.predictable_sd_estimate <- function(history, update_window, fallback, min_sd) {
-  t <- length(history) + 1L
-  n_used <- ((t - 1L) %/% update_window) * update_window
-  if (n_used <= 1L) return(max(fallback, min_sd))
-  s <- stats::sd(history[seq_len(n_used)])
-  if (!is.finite(s) || s <= 0) return(max(fallback, min_sd))
-  max(s, min_sd)
+# helper: thin wrapper around mvtnorm::dmvnorm with scalar return for vector input
+.mv_log_density <- function(x, mean, Sigma) {
+  x_mat <- .mv_as_matrix(x, k = length(mean))
+  out <- mvtnorm::dmvnorm(x_mat, mean = mean, sigma = Sigma, log = TRUE)
+  if (is.null(dim(x))) out[1L] else out
 }
 
-.predictable_mean_vector_estimate <- function(history_mat, update_window, box, init_mean) {
-  t <- nrow(history_mat) + 1L
-  n_used <- ((t - 1L) %/% update_window) * update_window
-  if (n_used <= 0L) return(.project_box(init_mean, box))
-  .project_box(colMeans(history_mat[seq_len(n_used), , drop = FALSE]), box)
-}
+# helper: ensure covariance matrix is symmetric PD by adding ridge if needed
+.ensure_pd <- function(S, ridge, fallback) {
+  if (!is.matrix(S) || any(!is.finite(S))) {
+    return(fallback)
+  }
 
-.predictable_cov_estimate <- function(history_mat, update_window, fallback, ridge) {
-  t <- nrow(history_mat) + 1L
-  n_used <- ((t - 1L) %/% update_window) * update_window
-  p <- ncol(fallback)
-  if (n_used <= 1L) return(fallback)
-  S <- stats::cov(history_mat[seq_len(n_used), , drop = FALSE])
-  if (!is.matrix(S) || any(!is.finite(S))) return(fallback)
   S <- (S + t(S)) / 2
-  for (k in 0:6) {
+  p <- nrow(S)
+  for (k in 0:8) {
     S_try <- S + diag(ridge * 10^k, p)
-    if (!inherits(try(chol(S_try), silent = TRUE), "try-error")) return(S_try)
+    if (!inherits(try(chol(S_try), silent = TRUE), "try-error")) {
+      return(S_try)
+    }
   }
   fallback
 }
 
-.lagged_sd_seq <- function(x, update_window, fallback_sd, min_sd) {
-  n <- length(x)
-  out <- rep(fallback_sd, n)
-  for (i in seq_len(n)) {
-    n_used <- ((i - 1L) %/% update_window) * update_window
-    if (n_used <= 1L) {
-      out[i] <- max(fallback_sd, min_sd)
-    } else {
-      s <- stats::sd(x[seq_len(n_used)])
-      out[i] <- if (is.finite(s) && s > 0) max(s, min_sd) else max(fallback_sd, min_sd)
-    }
+# helper: Gaussian mean MLE with optional interval truncation
+.gaussian_mean_mle <- function(x, mean_spec) {
+  if (.is_scalar_spec(mean_spec)) {
+    return(as.numeric(mean_spec))
   }
-  out
+
+  interval <- as.numeric(mean_spec)
+  if (length(x) == 0L) {
+    return(mean(interval))
+  }
+  .clamp(mean(x), interval[1], interval[2])
 }
 
-.mvnorm_log_density <- function(x, mean, Sigma) {
-  x_mat <- if (is.null(dim(x))) matrix(as.numeric(x), nrow = 1L) else as.matrix(x)
-  p <- length(mean)
-  if (ncol(x_mat) != p) stop("Observation dimension does not match mean/covariance dimension.", call. = FALSE)
-
-  R <- chol(Sigma)
-  log_det <- 2 * sum(log(diag(R)))
-  c0 <- -0.5 * (p * log(2 * pi) + log_det)
-
-  out <- numeric(nrow(x_mat))
-  for (i in seq_len(nrow(x_mat))) {
-    d <- x_mat[i, ] - mean
-    z <- forwardsolve(t(R), d)
-    out[i] <- c0 - 0.5 * sum(z^2)
+# helper: Gaussian sd MLE (dividing by n) around provided mean
+.gaussian_sd_mle <- function(x, mu, min_sd, fallback_sd = 1) {
+  fallback_sd <- max(as.numeric(fallback_sd), min_sd)
+  if (length(x) == 0L) {
+    return(fallback_sd)
   }
-  if (is.null(dim(x))) out[1L] else out
+
+  s <- sqrt(mean((x - mu)^2))
+  if (!is.finite(s) || s <= 0) {
+    return(fallback_sd)
+  }
+  max(s, min_sd)
 }
 
-.mvnorm_density <- function(x, mean, Sigma) exp(.mvnorm_log_density(x, mean, Sigma))
-
-.mv_cov_mle <- function(x, mu, ridge = 1e-6) {
-  p <- length(mu)
-  if (is.null(dim(x))) x <- matrix(x, ncol = p)
-  if (nrow(x) <= 1L) return(diag(ridge, p))
-
-  xc <- x - matrix(rep(mu, each = nrow(x)), nrow = nrow(x))
-  S <- crossprod(xc) / nrow(xc)
-  S <- (S + t(S)) / 2
-  for (k in 0:6) {
-    S_try <- S + diag(ridge * 10^k, p)
-    if (!inherits(try(chol(S_try), silent = TRUE), "try-error")) return(S_try)
+# helper: lagged Gaussian sd MLE for post-change unknown sd
+.gaussian_post_sd_lagged <- function(history, model) {
+  if (length(model@sd_post) == 1L) {
+    return(model@sd_post)
   }
-  diag(ridge, p)
+
+  fallback <- if (length(model@sd_pre) == 1L) model@sd_pre else 1
+  if (length(history) == 0L) {
+    return(max(fallback, model@min_sd))
+  }
+
+  mu_hist <- mean(history)
+  .gaussian_sd_mle(history, mu = mu_hist, min_sd = model@min_sd, fallback_sd = fallback)
 }
 
-.lagged_cov_seq <- function(x, update_window, fallback, ridge) {
-  n <- nrow(x)
-  out <- vector("list", n)
-  for (i in seq_len(n)) {
-    n_used <- ((i - 1L) %/% update_window) * update_window
-    if (n_used <= 1L) out[[i]] <- fallback else out[[i]] <- .mv_cov_mle(x[seq_len(n_used), , drop = FALSE], colMeans(x[seq_len(n_used), , drop = FALSE]), ridge)
+# helper: multivariate mean MLE with optional box truncation
+.mv_mean_mle <- function(x, mu_spec) {
+  if (is.numeric(mu_spec) && is.null(dim(mu_spec))) {
+    return(as.numeric(mu_spec))
   }
-  out
+
+  box <- mu_spec
+  if (nrow(x) == 0L) {
+    return(rowMeans(box))
+  }
+  .project_box(colMeans(x), box)
 }
 
+# helper: multivariate covariance MLE (dividing by n) around provided mean
+.mv_cov_mle <- function(x, mu, ridge, fallback) {
+  if (nrow(x) == 0L) {
+    return(fallback)
+  }
+
+  xc <- sweep(x, 2, as.numeric(mu), "-")
+  S <- crossprod(xc) / nrow(x)
+  .ensure_pd(S, ridge = ridge, fallback = fallback)
+}
+
+# helper: lagged multivariate covariance MLE for post-change unknown Sigma
+.mv_post_cov_lagged <- function(history, model, k) {
+  if (!is.null(model@Sigma_post)) {
+    return(model@Sigma_post)
+  }
+
+  fallback <- if (!is.null(model@Sigma_pre)) model@Sigma_pre else diag(1, k)
+  if (nrow(history) == 0L) {
+    return(fallback)
+  }
+
+  mu_hist <- colMeans(history)
+  .mv_cov_mle(history, mu = mu_hist, ridge = model@ridge, fallback = fallback)
+}
+
+# helper: check whether two K-by-2 boxes overlap
 .boxes_overlap <- function(b1, b2) {
-  # overlap is non-empty if all coordinates overlap
   all(pmax(b1[, 1], b2[, 1]) <= pmin(b1[, 2], b2[, 2]))
 }
 
-.mvnorm_log_density_grid <- function(x, means, Sigma) {
-  # means is G-by-K, x is length-K
-  R <- chol(Sigma)
-  k <- ncol(means)
-  c0 <- -0.5 * (k * log(2 * pi) + 2 * sum(log(diag(R))))
-  d <- sweep(means, 2, as.numeric(x), "-")
-  z <- t(backsolve(R, t(d)))
-  c0 - 0.5 * rowSums(z^2)
-}
-
-# Fast O(N*G) mixture increment path for univariate Gaussian composite post.
-.gaussian_mix_increments_fast <- function(model, x, log = FALSE) {
+# helper: cumulative Gaussian log-likelihood path under pre-change model
+.gaussian_pre_loglik_path <- function(model, x) {
   n <- length(x)
   if (n == 0L) return(numeric(0))
 
   simple_pre <- .is_scalar_spec(model@mean_pre) && length(model@sd_pre) == 1L
-  if (!simple_pre) {
-    warning("Composite/unknown pre-change Gaussian is not optimized in mix mode; using plug-in pre-change estimates.", call. = FALSE)
-  }
-
-  # Pre-change denominator parameters.
-  mu0_seq <- numeric(n)
-  sd0_seq <- numeric(n)
   if (simple_pre) {
-    mu0_seq[] <- as.numeric(model@mean_pre)
-    sd0_seq[] <- model@sd_pre
-  } else {
-    pre_iv <- if (.is_interval_spec(model@mean_pre)) as.numeric(model@mean_pre) else c(as.numeric(model@mean_pre), as.numeric(model@mean_pre))
-    for (t in seq_len(n)) {
-      h <- if (t == 1L) numeric(0) else x[seq_len(t - 1L)]
-      mu0_seq[t] <- if (.is_interval_spec(model@mean_pre)) .predictable_mean_estimate(h, model@update_window, pre_iv[1], pre_iv[2], mean(pre_iv)) else as.numeric(model@mean_pre)
-      if (length(model@sd_pre) == 1L) {
-        sd0_seq[t] <- model@sd_pre
-      } else {
-        sd0_seq[t] <- .predictable_sd_estimate(h, model@update_window, fallback = 1, min_sd = model@min_sd)
-      }
-    }
+    return(cumsum(stats::dnorm(x, mean = as.numeric(model@mean_pre), sd = model@sd_pre, log = TRUE)))
   }
 
-  # Post-change sd sequence (possibly lagged estimated).
-  if (length(model@sd_post) == 1L) {
-    sd1_seq <- rep(model@sd_post, n)
-  } else {
-    fallback <- if (length(model@sd_pre) == 1L) model@sd_pre else 1
-    sd1_seq <- .lagged_sd_seq(x, update_window = model@update_window, fallback_sd = fallback, min_sd = model@min_sd)
+  out <- numeric(n)
+  fallback_sd <- if (length(model@sd_post) == 1L) model@sd_post else 1
+
+  for (t in seq_len(n)) {
+    xt <- x[seq_len(t)]
+    mu0 <- .gaussian_mean_mle(xt, model@mean_pre)
+    sd0 <- if (length(model@sd_pre) == 1L) {
+      model@sd_pre
+    } else {
+      .gaussian_sd_mle(xt, mu = mu0, min_sd = model@min_sd, fallback_sd = fallback_sd)
+    }
+    out[t] <- sum(stats::dnorm(xt, mean = mu0, sd = sd0, log = TRUE))
+  }
+
+  out
+}
+
+# helper: cumulative Gaussian log-likelihood path under post-change model
+.gaussian_post_loglik_path <- function(model, x) {
+  n <- length(x)
+  if (n == 0L) return(numeric(0))
+
+  post_is_interval <- .is_interval_spec(model@mean_post)
+  is_mixture_post <- post_is_interval && identical(model@method, "mixture")
+
+  if (!is_mixture_post) {
+    out <- numeric(n)
+    running <- 0
+
+    for (t in seq_len(n)) {
+      history <- if (t == 1L) numeric(0) else x[seq_len(t - 1L)]
+      mu1 <- .gaussian_mean_mle(history, model@mean_post)
+      sd1 <- .gaussian_post_sd_lagged(history, model)
+      running <- running + stats::dnorm(x[t], mean = mu1, sd = sd1, log = TRUE)
+      out[t] <- running
+    }
+
+    return(out)
   }
 
   grid <- .gaussian_grid(as.numeric(model@mean_post), model@grid_size)
-  w <- if (length(model@prior_weights) == length(grid)) model@prior_weights else rep(1 / length(grid), length(grid))
-  w <- w / sum(w)
-  logw <- log(pmax(w, .Machine$double.eps))
+  w <- .normalize_weights(model@prior_weights, length(grid))
+  logw <- ifelse(w > 0, log(w), -Inf)
 
-  out_log <- numeric(n)
-  mode <- model@mix_weight_adapt
-  w_update <- as.integer(model@mix_update_window)
+  out <- numeric(n)
+  log_acc <- rep(0, length(grid))
 
-  if (mode == "none") {
-    for (t in seq_len(n)) {
-      log_post <- .logsumexp(logw + stats::dnorm(x[t], mean = grid, sd = sd1_seq[t], log = TRUE))
-      log_pre <- stats::dnorm(x[t], mean = mu0_seq[t], sd = sd0_seq[t], log = TRUE)
-      out_log[t] <- log_post - log_pre
-    }
-  } else {
-    logw_cur <- logw
-    block_acc <- rep(0, length(grid))
-    for (t in seq_len(n)) {
-      log_post_grid <- stats::dnorm(x[t], mean = grid, sd = sd1_seq[t], log = TRUE)
-      log_post <- .logsumexp(logw_cur + log_post_grid)
-      log_pre <- stats::dnorm(x[t], mean = mu0_seq[t], sd = sd0_seq[t], log = TRUE)
-      out_log[t] <- log_post - log_pre
-
-      block_acc <- block_acc + log_post_grid
-      if (t %% w_update == 0L) {
-        logw_cur <- logw_cur + block_acc
-        logw_cur <- logw_cur - .logsumexp(logw_cur)
-        block_acc[] <- 0
-      }
-    }
+  for (t in seq_len(n)) {
+    history <- if (t == 1L) numeric(0) else x[seq_len(t - 1L)]
+    sd1 <- .gaussian_post_sd_lagged(history, model)
+    log_acc <- log_acc + stats::dnorm(x[t], mean = grid, sd = sd1, log = TRUE)
+    out[t] <- .logsumexp(logw + log_acc)
   }
 
-  if (log) out_log else pmax(exp(out_log), .Machine$double.eps)
+  out
 }
 
-# Fast O(N*G) mixture increment path for multivariate Gaussian composite post.
-.mv_gaussian_mix_increments_fast <- function(model, x, log = FALSE) {
+# helper: cumulative MV Gaussian log-likelihood path under pre-change model
+.mv_pre_loglik_path <- function(model, x) {
   n <- nrow(x)
   if (n == 0L) return(numeric(0))
-  k <- ncol(x)
 
   simple_pre <- (is.numeric(model@mu_pre) && is.null(dim(model@mu_pre))) && !is.null(model@Sigma_pre)
-  if (!simple_pre) {
-    warning("Composite/unknown pre-change MV Gaussian is not optimized in mix mode; using plug-in pre-change estimates.", call. = FALSE)
-  }
-
-  mu0_seq <- matrix(0, nrow = n, ncol = k)
-  Sigma0_seq <- vector("list", n)
   if (simple_pre) {
-    for (t in seq_len(n)) {
-      mu0_seq[t, ] <- as.numeric(model@mu_pre)
-      Sigma0_seq[[t]] <- model@Sigma_pre
-    }
-  } else {
-    pre_box <- if (.is_matrix_box_spec(model@mu_pre)) model@mu_pre else cbind(as.numeric(model@mu_pre), as.numeric(model@mu_pre))
-    for (t in seq_len(n)) {
-      h <- if (t == 1L) matrix(numeric(0), nrow = 0, ncol = k) else x[seq_len(t - 1L), , drop = FALSE]
-      if (.is_matrix_box_spec(model@mu_pre)) {
-        mu0_seq[t, ] <- .predictable_mean_vector_estimate(h, model@update_window, pre_box, rowMeans(pre_box))
-      } else {
-        mu0_seq[t, ] <- as.numeric(model@mu_pre)
-      }
-      Sigma0_seq[[t]] <- if (!is.null(model@Sigma_pre)) model@Sigma_pre else .predictable_cov_estimate(h, model@update_window, fallback = diag(1, k), ridge = model@ridge)
-    }
+    return(cumsum(mvtnorm::dmvnorm(x, mean = as.numeric(model@mu_pre), sigma = model@Sigma_pre, log = TRUE)))
   }
 
-  Sigma1_fallback <- if (!is.null(model@Sigma_post)) model@Sigma_post else if (!is.null(model@Sigma_pre)) model@Sigma_pre else diag(1, k)
-  Sigma1_seq <- if (!is.null(model@Sigma_post)) rep(list(model@Sigma_post), n) else .lagged_cov_seq(x, model@update_window, Sigma1_fallback, model@ridge)
+  out <- numeric(n)
+  k <- ncol(x)
+  fallback <- if (!is.null(model@Sigma_post)) model@Sigma_post else diag(1, k)
+
+  for (t in seq_len(n)) {
+    xt <- x[seq_len(t), , drop = FALSE]
+    mu0 <- .mv_mean_mle(xt, model@mu_pre)
+    Sigma0 <- if (!is.null(model@Sigma_pre)) {
+      model@Sigma_pre
+    } else {
+      .mv_cov_mle(xt, mu = mu0, ridge = model@ridge, fallback = fallback)
+    }
+    out[t] <- sum(mvtnorm::dmvnorm(xt, mean = mu0, sigma = Sigma0, log = TRUE))
+  }
+
+  out
+}
+
+# helper: cumulative MV Gaussian log-likelihood path under post-change model
+.mv_post_loglik_path <- function(model, x) {
+  n <- nrow(x)
+  if (n == 0L) return(numeric(0))
+
+  k <- ncol(x)
+  post_is_box <- .is_matrix_box_spec(model@mu_post)
+  is_mixture_post <- post_is_box && identical(model@method, "mixture")
+
+  if (!is_mixture_post) {
+    out <- numeric(n)
+    running <- 0
+
+    for (t in seq_len(n)) {
+      history <- if (t == 1L) {
+        matrix(numeric(0), nrow = 0, ncol = k)
+      } else {
+        x[seq_len(t - 1L), , drop = FALSE]
+      }
+
+      mu1 <- .mv_mean_mle(history, model@mu_post)
+      Sigma1 <- .mv_post_cov_lagged(history, model, k)
+      running <- running + mvtnorm::dmvnorm(x[t, , drop = FALSE], mean = mu1, sigma = Sigma1, log = TRUE)
+      out[t] <- running
+    }
+
+    return(out)
+  }
 
   grid <- .mv_box_grid(model@mu_post, model@grid_size, model@max_grid_points)
   g <- nrow(grid)
-  w <- if (length(model@prior_weights) == g) model@prior_weights else rep(1 / g, g)
-  w <- w / sum(w)
-  logw <- log(pmax(w, .Machine$double.eps))
+  w <- .normalize_weights(model@prior_weights, g)
+  logw <- ifelse(w > 0, log(w), -Inf)
 
-  out_log <- numeric(n)
-  mode <- model@mix_weight_adapt
-  w_update <- as.integer(model@mix_update_window)
+  out <- numeric(n)
+  log_acc <- rep(0, g)
 
-  if (mode == "none") {
-    for (t in seq_len(n)) {
-      log_post_grid <- .mvnorm_log_density_grid(x[t, ], means = grid, Sigma = Sigma1_seq[[t]])
-      log_post <- .logsumexp(logw + log_post_grid)
-      log_pre <- .mvnorm_log_density(x[t, ], mean = mu0_seq[t, ], Sigma = Sigma0_seq[[t]])
-      out_log[t] <- log_post - log_pre
+  for (t in seq_len(n)) {
+    history <- if (t == 1L) {
+      matrix(numeric(0), nrow = 0, ncol = k)
+    } else {
+      x[seq_len(t - 1L), , drop = FALSE]
     }
-  } else {
-    logw_cur <- logw
-    block_acc <- rep(0, g)
-    for (t in seq_len(n)) {
-      log_post_grid <- .mvnorm_log_density_grid(x[t, ], means = grid, Sigma = Sigma1_seq[[t]])
-      log_post <- .logsumexp(logw_cur + log_post_grid)
-      log_pre <- .mvnorm_log_density(x[t, ], mean = mu0_seq[t, ], Sigma = Sigma0_seq[[t]])
-      out_log[t] <- log_post - log_pre
 
-      block_acc <- block_acc + log_post_grid
-      if (t %% w_update == 0L) {
-        logw_cur <- logw_cur + block_acc
-        logw_cur <- logw_cur - .logsumexp(logw_cur)
-        block_acc[] <- 0
-      }
-    }
+    Sigma1 <- .mv_post_cov_lagged(history, model, k)
+    log_t <- vapply(seq_len(g), function(i) {
+      mvtnorm::dmvnorm(x[t, , drop = FALSE], mean = grid[i, ], sigma = Sigma1, log = TRUE)
+    }, numeric(1L))
+
+    log_acc <- log_acc + log_t
+    out[t] <- .logsumexp(logw + log_acc)
   }
 
-  if (log) out_log else pmax(exp(out_log), .Machine$double.eps)
+  out
+}
+
+# helper: cumulative Gaussian log-likelihood ratio path
+.gaussian_log_lr_cum_path <- function(model, x) {
+  .gaussian_post_loglik_path(model, x) - .gaussian_pre_loglik_path(model, x)
+}
+
+# helper: cumulative multivariate Gaussian log-likelihood ratio path
+.mv_log_lr_cum_path <- function(model, x) {
+  .mv_post_loglik_path(model, x) - .mv_pre_loglik_path(model, x)
+}
+
+# helper: fast-path wrapper used by TSM for Gaussian mixture-post models
+.gaussian_mix_increments_fast <- function(model, x, log = FALSE) {
+  if (length(x) == 0L) return(numeric(0))
+  log_z <- .gaussian_log_lr_cum_path(model, x)
+  log_inc <- c(log_z[1L], diff(log_z))
+  if (log) return(log_inc)
+  pmax(exp(log_inc), .Machine$double.eps)
+}
+
+# helper: fast-path wrapper used by TSM for MV Gaussian mixture-post models
+.mv_gaussian_mix_increments_fast <- function(model, x, log = FALSE) {
+  if (nrow(x) == 0L) return(numeric(0))
+  log_z <- .mv_log_lr_cum_path(model, x)
+  log_inc <- c(log_z[1L], diff(log_z))
+  if (log) return(log_inc)
+  pmax(exp(log_inc), .Machine$double.eps)
 }
 
 # ---- constructors ----
 
+# Constructor: GaussianModel
+# inputs:
+#   mean_pre, mean_post = scalar or interval c(a,b)
+#   sd_pre, sd_post     = positive scalar or empty (estimate by MLE)
+#   method              = "predictable" or "mixture"
+#   grid_size           = integer >= 2, used for mixture over interval means
+#   prior_weights       = optional fixed mixture weights on post-change grid
+#   min_sd              = positive sd floor for numerical stability
+#   name                = model label
+# outputs:
+#   GaussianModel object
 GaussianModel <- function(mean_pre,
                           sd_pre = NULL,
                           mean_post,
                           sd_post = NULL,
                           method = c("predictable", "mixture"),
-                          update_window = 20,
                           grid_size = 101,
                           prior_weights = numeric(0),
-                          mix_weight_adapt = c("windowed", "none"),
-                          mix_update_window = 100,
                           min_sd = 1e-8,
                           name = "gaussian") {
   method <- match.arg(method)
-  mix_weight_adapt <- match.arg(mix_weight_adapt)
 
   if (!(.is_scalar_spec(mean_pre) || .is_interval_spec(mean_pre))) {
     stop("`mean_pre` must be a scalar or interval c(a,b).", call. = FALSE)
@@ -399,6 +463,7 @@ GaussianModel <- function(mean_pre,
   if (!(.is_scalar_spec(mean_post) || .is_interval_spec(mean_post))) {
     stop("`mean_post` must be a scalar or interval c(a,b).", call. = FALSE)
   }
+
   if (length(sd_pre) > 1L || (length(sd_pre) == 1L && (!is.finite(sd_pre) || sd_pre <= 0))) {
     stop("`sd_pre` must be empty or a positive scalar.", call. = FALSE)
   }
@@ -406,49 +471,50 @@ GaussianModel <- function(mean_pre,
     stop("`sd_post` must be empty or a positive scalar.", call. = FALSE)
   }
 
-  if (length(update_window) != 1L || update_window < 1 || update_window != as.integer(update_window)) {
-    stop("`update_window` must be a positive integer.", call. = FALSE)
-  }
   if (length(grid_size) != 1L || grid_size < 2 || grid_size != as.integer(grid_size)) {
     stop("`grid_size` must be integer >= 2.", call. = FALSE)
   }
   if (length(min_sd) != 1L || min_sd <= 0) {
     stop("`min_sd` must be a positive scalar.", call. = FALSE)
   }
-  if (length(mix_update_window) != 1L || mix_update_window < 1 || mix_update_window != as.integer(mix_update_window)) {
-    stop("`mix_update_window` must be a positive integer.", call. = FALSE)
-  }
 
-  new("GaussianModel",
-      name = name,
-      mean_pre = mean_pre,
-      mean_post = mean_post,
-      sd_pre = sd_pre,
-      sd_post = sd_post,
-      method = method,
-      update_window = as.integer(update_window),
-      grid_size = as.integer(grid_size),
-      prior_weights = as.numeric(prior_weights),
-      mix_weight_adapt = mix_weight_adapt,
-      mix_update_window = as.integer(mix_update_window),
-      min_sd = min_sd)
+  new(
+    "GaussianModel",
+    name = name,
+    mean_pre = mean_pre,
+    mean_post = mean_post,
+    sd_pre = sd_pre,
+    sd_post = sd_post,
+    method = method,
+    grid_size = as.integer(grid_size),
+    prior_weights = as.numeric(prior_weights),
+    min_sd = min_sd
+  )
 }
 
+# Constructor: MultivariateGaussianModel
+# inputs:
+#   mu_pre, mu_post       = vector (simple) or K-by-2 box matrix (composite)
+#   Sigma_pre, Sigma_post = K-by-K covariance matrix or NULL (estimate by MLE)
+#   method                = "predictable" or "mixture"
+#   grid_size             = integer >= 2 points per axis for mixture grid
+#   prior_weights         = optional fixed mixture weights on mean grid
+#   ridge                 = positive scalar ridge for covariance regularization
+#   max_grid_points       = positive integer cap on mixture grid size
+#   name                  = model label
+# outputs:
+#   MultivariateGaussianModel object
 MultivariateGaussianModel <- function(mu_pre,
                                       Sigma_pre = NULL,
                                       mu_post,
                                       Sigma_post = NULL,
                                       method = c("predictable", "mixture"),
-                                      update_window = 20,
                                       grid_size = 5,
                                       prior_weights = numeric(0),
-                                      mix_weight_adapt = c("windowed", "none"),
-                                      mix_update_window = 100,
                                       ridge = 1e-6,
                                       max_grid_points = 5000,
                                       name = "mv-gaussian") {
   method <- match.arg(method)
-  mix_weight_adapt <- match.arg(mix_weight_adapt)
 
   pre_is_vec <- is.numeric(mu_pre) && is.null(dim(mu_pre))
   pre_is_box <- .is_matrix_box_spec(mu_pre)
@@ -461,7 +527,9 @@ MultivariateGaussianModel <- function(mu_pre,
 
   K_pre <- if (pre_is_vec) length(mu_pre) else nrow(mu_pre)
   K_post <- if (post_is_vec) length(mu_post) else nrow(mu_post)
-  if (K_pre != K_post) stop("Pre/post mean dimensions must match.", call. = FALSE)
+  if (K_pre != K_post) {
+    stop("Pre/post mean dimensions must match.", call. = FALSE)
+  }
   K <- K_pre
 
   if (pre_is_box && post_is_box && .boxes_overlap(mu_pre, mu_post)) {
@@ -469,231 +537,103 @@ MultivariateGaussianModel <- function(mu_pre,
   }
 
   if (!is.null(Sigma_pre)) {
-    if (!is.matrix(Sigma_pre) || nrow(Sigma_pre) != K || ncol(Sigma_pre) != K) stop("`Sigma_pre` must be K-by-K.", call. = FALSE)
-    if (inherits(try(chol((Sigma_pre + t(Sigma_pre)) / 2), silent = TRUE), "try-error")) stop("`Sigma_pre` must be positive definite.", call. = FALSE)
+    if (!is.matrix(Sigma_pre) || nrow(Sigma_pre) != K || ncol(Sigma_pre) != K) {
+      stop("`Sigma_pre` must be K-by-K.", call. = FALSE)
+    }
+    if (inherits(try(chol((Sigma_pre + t(Sigma_pre)) / 2), silent = TRUE), "try-error")) {
+      stop("`Sigma_pre` must be positive definite.", call. = FALSE)
+    }
   }
+
   if (!is.null(Sigma_post)) {
-    if (!is.matrix(Sigma_post) || nrow(Sigma_post) != K || ncol(Sigma_post) != K) stop("`Sigma_post` must be K-by-K.", call. = FALSE)
-    if (inherits(try(chol((Sigma_post + t(Sigma_post)) / 2), silent = TRUE), "try-error")) stop("`Sigma_post` must be positive definite.", call. = FALSE)
+    if (!is.matrix(Sigma_post) || nrow(Sigma_post) != K || ncol(Sigma_post) != K) {
+      stop("`Sigma_post` must be K-by-K.", call. = FALSE)
+    }
+    if (inherits(try(chol((Sigma_post + t(Sigma_post)) / 2), silent = TRUE), "try-error")) {
+      stop("`Sigma_post` must be positive definite.", call. = FALSE)
+    }
   }
 
-  if (length(update_window) != 1L || update_window < 1 || update_window != as.integer(update_window)) stop("`update_window` must be positive integer.", call. = FALSE)
-  if (length(grid_size) != 1L || grid_size < 2 || grid_size != as.integer(grid_size)) stop("`grid_size` must be integer >= 2.", call. = FALSE)
-  if (length(mix_update_window) != 1L || mix_update_window < 1 || mix_update_window != as.integer(mix_update_window)) stop("`mix_update_window` must be positive integer.", call. = FALSE)
-  if (length(ridge) != 1L || ridge <= 0) stop("`ridge` must be positive scalar.", call. = FALSE)
+  if (length(grid_size) != 1L || grid_size < 2 || grid_size != as.integer(grid_size)) {
+    stop("`grid_size` must be integer >= 2.", call. = FALSE)
+  }
+  if (length(ridge) != 1L || ridge <= 0) {
+    stop("`ridge` must be a positive scalar.", call. = FALSE)
+  }
+  if (length(max_grid_points) != 1L || max_grid_points < 1 || max_grid_points != as.integer(max_grid_points)) {
+    stop("`max_grid_points` must be a positive integer.", call. = FALSE)
+  }
 
-  new("MultivariateGaussianModel",
-      name = name,
-      mu_pre = mu_pre,
-      mu_post = mu_post,
-      Sigma_pre = Sigma_pre,
-      Sigma_post = Sigma_post,
-      method = method,
-      update_window = as.integer(update_window),
-      grid_size = as.integer(grid_size),
-      prior_weights = as.numeric(prior_weights),
-      mix_weight_adapt = mix_weight_adapt,
-      mix_update_window = as.integer(mix_update_window),
-      ridge = ridge,
-      max_grid_points = as.integer(max_grid_points))
+  new(
+    "MultivariateGaussianModel",
+    name = name,
+    mu_pre = mu_pre,
+    mu_post = mu_post,
+    Sigma_pre = Sigma_pre,
+    Sigma_post = Sigma_post,
+    method = method,
+    grid_size = as.integer(grid_size),
+    prior_weights = as.numeric(prior_weights),
+    ridge = ridge,
+    max_grid_points = as.integer(max_grid_points)
+  )
 }
 
+# Constructor: BernoulliModel
+# inputs:
+#   p_pre, p_post = scalar probabilities in (0,1)
+#   name          = model label
+# outputs:
+#   BernoulliModel object
 BernoulliModel <- function(p_pre, p_post, name = "bernoulli") {
   stopifnot(length(p_pre) == 1L, length(p_post) == 1L, p_pre > 0, p_pre < 1, p_post > 0, p_post < 1)
   new("BernoulliModel", name = name, p_pre = p_pre, p_post = p_post)
 }
 
+# Constructor: AR1Model
+# inputs:
+#   phi_pre, phi_post     = AR(1) coefficients in (-1,1)
+#   sigma_pre, sigma_post = positive innovation sd
+#   mu_0, mu_1            = intercept terms for pre/post conditional means
+#   x0                    = initial value when no history is available
+#   name                  = model label
+# outputs:
+#   AR1Model object
 AR1Model <- function(phi_pre, sigma_pre, mu_0 = 0, phi_post, sigma_post, mu_1 = 0, x0 = 0, name = "ar1") {
-  stopifnot(length(phi_pre) == 1L, length(phi_post) == 1L, abs(phi_pre) < 1, abs(phi_post) < 1,
-            sigma_pre > 0, sigma_post > 0, length(mu_0) == 1L, length(mu_1) == 1L, length(x0) == 1L)
-  new("AR1Model", name = name, phi_pre = phi_pre, sigma_pre = sigma_pre, mu_pre = mu_0,
-      phi_post = phi_post, sigma_post = sigma_post, mu_post = mu_1, x0 = x0)
-}
+  stopifnot(
+    length(phi_pre) == 1L, length(phi_post) == 1L,
+    abs(phi_pre) < 1, abs(phi_post) < 1,
+    sigma_pre > 0, sigma_post > 0,
+    length(mu_0) == 1L, length(mu_1) == 1L,
+    length(x0) == 1L
+  )
 
-# ---- path builders for composite models ----
-.gaussian_mean_seq_post <- function(model, x) {
-  n <- length(x)
-  if (.is_scalar_spec(model@mean_post)) return(rep(as.numeric(model@mean_post), n))
-
-  # composite post interval
-  interval <- as.numeric(model@mean_post)
-  if (model@method == "predictable") {
-    out <- numeric(n)
-    init <- mean(interval)
-    u <- as.integer(model@update_window)
-    for (i in seq_len(n)) {
-      n_used <- ((i - 1L) %/% u) * u
-      if (n_used <= 0L) out[i] <- init else out[i] <- .clamp(mean(x[seq_len(n_used)]), interval[1], interval[2])
-    }
-    return(out)
-  }
-
-  # mixture handled separately
-  rep(NA_real_, n)
-}
-
-.gaussian_pre_params_t <- function(model, x, t) {
-  if (.is_scalar_spec(model@mean_pre)) {
-    mu <- as.numeric(model@mean_pre)
-  } else {
-    iv <- as.numeric(model@mean_pre)
-    mu <- .clamp(mean(x[seq_len(t)]), iv[1], iv[2])
-  }
-
-  if (length(model@sd_pre) == 1L) {
-    sd <- model@sd_pre
-  } else {
-    sd <- .gaussian_sd_mle(x[seq_len(t)], mu = mu, min_sd = model@min_sd)
-  }
-  c(mu = mu, sd = sd)
-}
-
-.gaussian_log_lr_cum_path <- function(model, x) {
-  n <- length(x)
-  logZ <- numeric(n)
-
-  # pre denominator reset needed when pre mean composite OR pre sd unknown
-  pre_reset <- .is_interval_spec(model@mean_pre) || length(model@sd_pre) == 0L
-
-  sd1_fallback <- if (length(model@sd_post) == 1L) model@sd_post else if (length(model@sd_pre) == 1L) model@sd_pre else 1
-  sd1_seq <- if (length(model@sd_post) == 1L) rep(model@sd_post, n) else .lagged_sd_seq(x, as.integer(model@update_window), sd1_fallback, model@min_sd)
-
-  if (!.is_interval_spec(model@mean_post) || model@method == "predictable") {
-    mu1_seq <- .gaussian_mean_seq_post(model, x)
-    for (t in seq_len(n)) {
-      pre_par <- .gaussian_pre_params_t(model, x, t)
-      log_den <- if (pre_reset) {
-        sum(stats::dnorm(x[seq_len(t)], mean = pre_par["mu"], sd = pre_par["sd"], log = TRUE))
-      } else {
-        sum(stats::dnorm(x[seq_len(t)], mean = as.numeric(model@mean_pre), sd = model@sd_pre, log = TRUE))
-      }
-      log_num <- sum(stats::dnorm(x[seq_len(t)], mean = mu1_seq[seq_len(t)], sd = sd1_seq[seq_len(t)], log = TRUE))
-      logZ[t] <- log_num - log_den
-    }
-    return(logZ)
-  }
-
-  # mixture post over interval
-  grid <- .gaussian_grid(as.numeric(model@mean_post), model@grid_size)
-  w <- if (length(model@prior_weights) == length(grid)) model@prior_weights else rep(1 / length(grid), length(grid))
-  w <- w / sum(w)
-  logw <- log(pmax(w, .Machine$double.eps))
-
-  for (t in seq_len(n)) {
-    pre_par <- .gaussian_pre_params_t(model, x, t)
-    log_den <- if (pre_reset) {
-      sum(stats::dnorm(x[seq_len(t)], mean = pre_par["mu"], sd = pre_par["sd"], log = TRUE))
-    } else {
-      sum(stats::dnorm(x[seq_len(t)], mean = as.numeric(model@mean_pre), sd = model@sd_pre, log = TRUE))
-    }
-
-    loglikes <- vapply(grid, function(mu) {
-      sum(stats::dnorm(x[seq_len(t)], mean = mu, sd = sd1_seq[seq_len(t)], log = TRUE))
-    }, numeric(1L))
-    log_num <- .logsumexp(logw + loglikes)
-    logZ[t] <- log_num - log_den
-  }
-
-  logZ
-}
-
-.mv_mean_seq_post <- function(model, x) {
-  n <- nrow(x)
-  if (is.numeric(model@mu_post) && is.null(dim(model@mu_post))) {
-    return(matrix(rep(as.numeric(model@mu_post), each = n), nrow = n))
-  }
-
-  # composite post box + predictable
-  box <- model@mu_post
-  out <- matrix(0, nrow = n, ncol = nrow(box))
-  init <- rowMeans(box)
-  u <- as.integer(model@update_window)
-  for (i in seq_len(n)) {
-    n_used <- ((i - 1L) %/% u) * u
-    if (n_used <= 0L) out[i, ] <- init else out[i, ] <- .project_box(colMeans(x[seq_len(n_used), , drop = FALSE]), box)
-  }
-  out
-}
-
-.mv_pre_params_t <- function(model, x, t) {
-  if (is.numeric(model@mu_pre) && is.null(dim(model@mu_pre))) {
-    mu <- as.numeric(model@mu_pre)
-  } else {
-    mu <- .project_box(colMeans(x[seq_len(t), , drop = FALSE]), model@mu_pre)
-  }
-
-  if (!is.null(model@Sigma_pre)) {
-    Sigma <- model@Sigma_pre
-  } else {
-    Sigma <- .mv_cov_mle(x[seq_len(t), , drop = FALSE], mu = mu, ridge = model@ridge)
-  }
-  list(mu = mu, Sigma = Sigma)
-}
-
-.mv_log_lr_cum_path <- function(model, x) {
-  n <- nrow(x)
-  logZ <- numeric(n)
-  K <- ncol(x)
-
-  pre_reset <- .is_matrix_box_spec(model@mu_pre) || is.null(model@Sigma_pre)
-
-  Sigma1_fallback <- if (!is.null(model@Sigma_post)) model@Sigma_post else if (!is.null(model@Sigma_pre)) model@Sigma_pre else diag(1, K)
-  Sigma1_seq <- if (!is.null(model@Sigma_post)) rep(list(model@Sigma_post), n) else .lagged_cov_seq(x, as.integer(model@update_window), Sigma1_fallback, model@ridge)
-
-  post_box <- .is_matrix_box_spec(model@mu_post)
-  if (!post_box || model@method == "predictable") {
-    mu1_seq <- .mv_mean_seq_post(model, x)
-    for (t in seq_len(n)) {
-      pre_par <- .mv_pre_params_t(model, x, t)
-      log_den <- if (pre_reset) {
-        sum(.mvnorm_log_density(x[seq_len(t), , drop = FALSE], mean = pre_par$mu, Sigma = pre_par$Sigma))
-      } else {
-        sum(.mvnorm_log_density(x[seq_len(t), , drop = FALSE], mean = as.numeric(model@mu_pre), Sigma = model@Sigma_pre))
-      }
-
-      log_num <- 0
-      for (i in seq_len(t)) {
-        log_num <- log_num + .mvnorm_log_density(x[i, ], mean = mu1_seq[i, ], Sigma = Sigma1_seq[[i]])
-      }
-      logZ[t] <- log_num - log_den
-    }
-    return(logZ)
-  }
-
-  # mixture post box
-  grid <- .mv_box_grid(model@mu_post, model@grid_size, model@max_grid_points)
-  G <- nrow(grid)
-  w <- if (length(model@prior_weights) == G) model@prior_weights else rep(1 / G, G)
-  w <- w / sum(w)
-  logw <- log(pmax(w, .Machine$double.eps))
-
-  for (t in seq_len(n)) {
-    pre_par <- .mv_pre_params_t(model, x, t)
-    log_den <- if (pre_reset) {
-      sum(.mvnorm_log_density(x[seq_len(t), , drop = FALSE], mean = pre_par$mu, Sigma = pre_par$Sigma))
-    } else {
-      sum(.mvnorm_log_density(x[seq_len(t), , drop = FALSE], mean = as.numeric(model@mu_pre), Sigma = model@Sigma_pre))
-    }
-
-    loglikes <- numeric(G)
-    for (g in seq_len(G)) {
-      ll <- 0
-      for (i in seq_len(t)) {
-        ll <- ll + .mvnorm_log_density(x[i, ], mean = grid[g, ], Sigma = Sigma1_seq[[i]])
-      }
-      loglikes[g] <- ll
-    }
-    log_num <- .logsumexp(logw + loglikes)
-    logZ[t] <- log_num - log_den
-  }
-
-  logZ
+  new(
+    "AR1Model",
+    name = name,
+    phi_pre = phi_pre,
+    sigma_pre = sigma_pre,
+    mu_pre = mu_0,
+    phi_post = phi_post,
+    sigma_post = sigma_post,
+    mu_post = mu_1,
+    x0 = x0
+  )
 }
 
 # ---- density methods ----
 
+# Method: model_density for GaussianModel
+# inputs:
+#   object  = GaussianModel
+#   x       = scalar/vector observation(s)
+#   regime  = "pre" or "post"
+#   history = unused (kept for generic compatibility)
+# outputs:
+#   numeric density value(s)
 setMethod("model_density", "GaussianModel", function(object, x, regime = c("pre", "post"), history = NULL) {
   regime <- match.arg(regime)
+
   if (regime == "pre") {
     mu <- if (.is_scalar_spec(object@mean_pre)) as.numeric(object@mean_pre) else mean(as.numeric(object@mean_pre))
     sd <- if (length(object@sd_pre) == 1L) object@sd_pre else 1
@@ -705,89 +645,177 @@ setMethod("model_density", "GaussianModel", function(object, x, regime = c("pre"
   stats::dnorm(x, mean = mu, sd = sd)
 })
 
+# Method: model_density for MultivariateGaussianModel
+# inputs:
+#   object  = MultivariateGaussianModel
+#   x       = numeric vector/matrix observation(s)
+#   regime  = "pre" or "post"
+#   history = unused (kept for generic compatibility)
+# outputs:
+#   numeric density value(s)
 setMethod("model_density", "MultivariateGaussianModel", function(object, x, regime = c("pre", "post"), history = NULL) {
   regime <- match.arg(regime)
+
   if (regime == "pre") {
     mu <- if (is.numeric(object@mu_pre) && is.null(dim(object@mu_pre))) as.numeric(object@mu_pre) else rowMeans(object@mu_pre)
     Sigma <- if (!is.null(object@Sigma_pre)) object@Sigma_pre else diag(1, length(mu))
-    return(.mvnorm_density(x, mean = mu, Sigma = Sigma))
+    return(exp(.mv_log_density(x, mean = mu, Sigma = Sigma)))
   }
 
   mu <- if (is.numeric(object@mu_post) && is.null(dim(object@mu_post))) as.numeric(object@mu_post) else rowMeans(object@mu_post)
   Sigma <- if (!is.null(object@Sigma_post)) object@Sigma_post else diag(1, length(mu))
-  .mvnorm_density(x, mean = mu, Sigma = Sigma)
+  exp(.mv_log_density(x, mean = mu, Sigma = Sigma))
 })
 
+# Method: model_density for BernoulliModel
+# inputs:
+#   object  = BernoulliModel
+#   x       = 0/1 observation(s)
+#   regime  = "pre" or "post"
+#   history = unused (kept for generic compatibility)
+# outputs:
+#   numeric Bernoulli probability mass value(s)
 setMethod("model_density", "BernoulliModel", function(object, x, regime = c("pre", "post"), history = NULL) {
   regime <- match.arg(regime)
   prob <- if (regime == "pre") object@p_pre else object@p_post
   stats::dbinom(x, size = 1L, prob = prob)
 })
 
+# Method: model_density for AR1Model
+# inputs:
+#   object  = AR1Model
+#   x       = scalar/vector observation(s)
+#   regime  = "pre" or "post"
+#   history = optional numeric history; last element is used as X_{t-1}
+# outputs:
+#   numeric Gaussian conditional density value(s)
 setMethod("model_density", "AR1Model", function(object, x, regime = c("pre", "post"), history = NULL) {
   regime <- match.arg(regime)
   prev <- object@x0
-  if (!is.null(history) && length(history) >= 1L) prev <- history[length(history)]
-  if (regime == "pre") {
-    stats::dnorm(x, mean = object@mu_pre + object@phi_pre * prev, sd = object@sigma_pre)
-  } else {
-    stats::dnorm(x, mean = object@mu_post + object@phi_post * prev, sd = object@sigma_post)
+  if (!is.null(history) && length(history) >= 1L) {
+    prev <- history[length(history)]
   }
+
+  if (regime == "pre") {
+    return(stats::dnorm(x, mean = object@mu_pre + object@phi_pre * prev, sd = object@sigma_pre))
+  }
+  stats::dnorm(x, mean = object@mu_post + object@phi_post * prev, sd = object@sigma_post)
 })
 
 # ---- likelihood increment methods ----
 
+# Method: likelihood_increment for GaussianModel
+# inputs:
+#   object  = GaussianModel
+#   x       = scalar/vector observation(s)
+#   history = optional numeric history observed before x
+#   log     = logical; return log-increment when TRUE
+# outputs:
+#   numeric increment(s)
 setMethod("likelihood_increment", "GaussianModel", function(object, x, history = NULL, log = FALSE) {
-  # check if the model is simple and quickly compute if so
   simple_fast <- .is_scalar_spec(object@mean_pre) && .is_scalar_spec(object@mean_post) &&
     length(object@sd_pre) == 1L && length(object@sd_post) == 1L
+
   if (simple_fast) {
     out_log <- stats::dnorm(x, mean = as.numeric(object@mean_post), sd = object@sd_post, log = TRUE) -
       stats::dnorm(x, mean = as.numeric(object@mean_pre), sd = object@sd_pre, log = TRUE)
     return(if (log) out_log else pmax(exp(out_log), .Machine$double.eps))
   }
-  
-  # update the likelihood increments based on the history
-  if ((is.null(history) || length(history) == 0L) && is.numeric(x) && length(x) > 1L && is.null(dim(x))) {
-    out <- numeric(length(x))
-    h <- numeric(0)
-    for (i in seq_along(x)) {
-      out[i] <- likelihood_increment(object, x = x[i], history = h, log = log)
-      h <- c(h, x[i])
-    }
-    return(out)
-  }
 
   history <- if (is.null(history)) numeric(0) else as.numeric(history)
-  xx <- c(history, x)
-  logZ <- .gaussian_log_lr_cum_path(object, xx)
-  out_log <- if (length(logZ) == 1L) logZ[1L] else logZ[length(logZ)] - logZ[length(logZ) - 1L]
-  if (log) out_log else pmax(exp(out_log), .Machine$double.eps)
+  x_new <- as.numeric(x)
+  xx <- c(history, x_new)
+
+  if (length(xx) == 0L) {
+    return(numeric(0))
+  }
+
+  log_z <- .gaussian_log_lr_cum_path(object, xx)
+
+  if (length(history) == 0L) {
+    log_inc <- c(log_z[1L], diff(log_z))
+  } else {
+    seg <- log_z[(length(history) + 1L):length(log_z)]
+    base <- log_z[length(history)]
+    log_inc <- c(seg[1L] - base, diff(seg))
+  }
+
+  if (length(x_new) == 1L) {
+    log_inc <- log_inc[1L]
+  }
+
+  if (log) log_inc else pmax(exp(log_inc), .Machine$double.eps)
 })
 
+# Method: likelihood_increment for MultivariateGaussianModel
+# inputs:
+#   object  = MultivariateGaussianModel
+#   x       = numeric vector (single observation) or matrix (multiple observations)
+#   history = optional matrix history observed before x
+#   log     = logical; return log-increment when TRUE
+# outputs:
+#   numeric increment(s)
 setMethod("likelihood_increment", "MultivariateGaussianModel", function(object, x, history = NULL, log = FALSE) {
-  # check if the model is simple and quickly compute increments if so 
   simple_fast <- (is.numeric(object@mu_pre) && is.null(dim(object@mu_pre))) &&
     (is.numeric(object@mu_post) && is.null(dim(object@mu_post))) &&
-    !is.null(object@Sigma_pre) && !is.null(object@Sigma_post) 
+    !is.null(object@Sigma_pre) && !is.null(object@Sigma_post)
+
   if (simple_fast) {
-    out_log <- .mvnorm_log_density(x, mean = as.numeric(object@mu_post), Sigma = object@Sigma_post) -
-      .mvnorm_log_density(x, mean = as.numeric(object@mu_pre), Sigma = object@Sigma_pre)
+    out_log <- .mv_log_density(x, mean = as.numeric(object@mu_post), Sigma = object@Sigma_post) -
+      .mv_log_density(x, mean = as.numeric(object@mu_pre), Sigma = object@Sigma_pre)
     return(if (log) out_log else pmax(exp(out_log), .Machine$double.eps))
   }
 
-  # compute increments under composite model
-  x_row <- matrix(as.numeric(x), nrow = 1L)
-  hh <- if (is.null(history) || length(history) == 0L) matrix(numeric(0), nrow = 0, ncol = ncol(x_row)) else as.matrix(history)
-  xx <- rbind(hh, x_row)
-  logZ <- .mv_log_lr_cum_path(object, xx)
-  out_log <- if (length(logZ) == 1L) logZ[1L] else logZ[length(logZ)] - logZ[length(logZ) - 1L]
-  if (log) out_log else pmax(exp(out_log), .Machine$double.eps)
+  k <- if (is.numeric(object@mu_pre) && is.null(dim(object@mu_pre))) {
+    length(object@mu_pre)
+  } else {
+    nrow(object@mu_pre)
+  }
+
+  x_new <- .mv_as_matrix(x, k = k)
+  hist_mat <- if (is.null(history) || length(history) == 0L) {
+    matrix(numeric(0), nrow = 0, ncol = k)
+  } else {
+    .mv_as_matrix(history, k = k)
+  }
+
+  xx <- rbind(hist_mat, x_new)
+  if (nrow(xx) == 0L) {
+    return(numeric(0))
+  }
+
+  log_z <- .mv_log_lr_cum_path(object, xx)
+
+  if (nrow(hist_mat) == 0L) {
+    log_inc <- c(log_z[1L], diff(log_z))
+  } else {
+    seg <- log_z[(nrow(hist_mat) + 1L):length(log_z)]
+    base <- log_z[nrow(hist_mat)]
+    log_inc <- c(seg[1L] - base, diff(seg))
+  }
+
+  if (nrow(x_new) == 1L) {
+    log_inc <- log_inc[1L]
+  }
+
+  if (log) log_inc else pmax(exp(log_inc), .Machine$double.eps)
 })
 
+# Method: likelihood_increment for generic Model fallback
+# inputs:
+#   object  = Model subclass with model_density implemented
+#   x       = scalar/vector observation(s)
+#   history = optional history passed to model_density
+#   log     = logical; return log-increment when TRUE
+# outputs:
+#   numeric increment(s)
 setMethod("likelihood_increment", "Model", function(object, x, history = NULL, log = FALSE) {
   pre <- model_density(object, x = x, regime = "pre", history = history)
   post <- model_density(object, x = x, regime = "post", history = history)
-  if (log) return(log(pmax(post, .Machine$double.eps)) - log(pmax(pre, .Machine$double.eps)))
+
+  if (log) {
+    return(log(pmax(post, .Machine$double.eps)) - log(pmax(pre, .Machine$double.eps)))
+  }
+
   pmax(post / pmax(pre, .Machine$double.eps), .Machine$double.eps)
 })

@@ -44,3 +44,18 @@ If the package is not installed yet, render the source vignette directly:
 ```r
 rmarkdown::render("vignettes/workflow.Rmd")
 ```
+
+## Testing
+
+Quick unit tests (default; skips integration tests):
+
+```r
+testthat::test_local()
+```
+
+Full suite including integration/calibration tests:
+
+```r
+Sys.setenv(RUN_INTEGRATION_TESTS = "true")
+testthat::test_local()
+```

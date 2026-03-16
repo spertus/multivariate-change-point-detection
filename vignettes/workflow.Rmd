@@ -255,8 +255,7 @@ model_comp_mix <- MultivariateGaussianModel(
   Sigma_pre = diag(K),
   mu_post = rbind(c(0,1), c(0,1), c(0,1)),
   Sigma_post = diag(K),
-  method = "mixture",
-  mix_weight_adapt = "none"
+  method = "mixture"
 )
 
 # instantiate TSMs and compute increments
@@ -328,6 +327,31 @@ legend("topleft",
 par(old_par)
 ```
 
+## Combining
+
+```{r}
+K <- 3 # number of streams
+N <- 50 # length of streams
+# generate multivariate normal data on [0,1]
+dgp_mvn_corr <- DGP(
+  generator = default_multivariate_gaussian_dgp,
+  pre_params = list(mu = c(0.5, 0.5, 0.5), 
+                    Sigma = matrix(
+                            c(1.0,  0.5,  0.3,
+                              0.5,  1.2,  0.4,
+                              0.3,  0.4,  0.8)/20, nrow = 3, byrow = TRUE)
+                    ), # parameters pre-change
+  post_params = list(mu = c(0.6, 0.6, 0.6), Sigma = diag(K)/20), # parameters post-change
+  nu = 25, # change-point
+  name = "mv-gauss-change"
+)
+
+# generate data from the dgp
+x <- generate_stream(dgp_mvn_corr, N = N, K = K)
+
+# 
+```
+
 
 ## Composite models
 
@@ -347,6 +371,5 @@ colnames(prices) <- c("corn", "soybean", "wheat")
 returns <- diff(log(prices))
 plot(returns, legend.loc = "topright")
 ```
-
 
 
