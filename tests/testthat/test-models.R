@@ -29,7 +29,6 @@ test_that("AR1 model respects specified pre/post process means", {
 
 test_that("AR1 conditional mean uses intercept parameterization", {
   m <- AR1Model(phi_pre = 0.5, sigma_pre = 1, mu_0 = 2, phi_post = 0.5, sigma_post = 1, mu_1 = 2, x0 = 0)
-  # Under intercept parameterization, E[X_t | X_{t-1}=4] = 2 + 0.5 * 4 = 4
   d_at_mean <- model_density(m, x = 4, regime = "pre", history = c(4))
   d_off_mean <- model_density(m, x = 3, regime = "pre", history = c(4))
   expect_gt(d_at_mean, d_off_mean)
@@ -51,9 +50,22 @@ test_that("Multivariate Gaussian model returns scalar density and valid incremen
   expect_gt(inc, 0)
 })
 
+test_that("Gaussian constructor supports mix_weight_adapt argument", {
+  m <- GaussianModel(
+    mean_pre = 0,
+    sd_pre = 1,
+    mean_post = c(-1, 1),
+    sd_post = 1,
+    method = "mixture",
+    mix_weight_adapt = "none"
+  )
+
+  expect_s4_class(m, "GaussianModel")
+  expect_identical(m@mix_weight_adapt, "none")
+})
+
 test_that(".predictable_mean_estimate returns mean when inside bounds", {
   x <- rnorm(100, 2, 1)
-  # this should return the mean of x
   lag_mean <- .predictable_mean_estimate(
     history = x,
     update_window = 5,
@@ -61,7 +73,6 @@ test_that(".predictable_mean_estimate returns mean when inside bounds", {
     upper = 3,
     init_mean = 0
   )
-  # this should hit the upper limit of 1
   lag_bound_mean <- .predictable_mean_estimate(
     history = x,
     update_window = 5,
@@ -69,10 +80,9 @@ test_that(".predictable_mean_estimate returns mean when inside bounds", {
     upper = 1,
     init_mean = 0
   )
-  expect_true(lag_mean == mean(x))
-  expect_true(lag_bound_mean == 1)
+  expect_equal(lag_mean, mean(x))
+  expect_equal(lag_bound_mean, 1)
 })
-
 
 test_that("Gaussian composite post model (predictable) respects update window", {
   m <- GaussianModel(
@@ -84,7 +94,6 @@ test_that("Gaussian composite post model (predictable) respects update window", 
     update_window = 2
   )
 
-  # At t = 4 (history length 3), update_window = 2 => estimate based on first 2 values only.
   h <- c(2, 2, -1)
   inc <- likelihood_increment(m, x = 2, history = h)
   ref <- dnorm(2, mean = 2, sd = 1) / dnorm(2, mean = 0, sd = 1)

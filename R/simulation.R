@@ -245,6 +245,7 @@ run_simulation <- function(detector, tsm, dgp, n_rep = 200, N = 500, K = 1L, com
         nu = nu,
         false_alarm_prob = fa,
         ARL = arl,
+        ADD = cad,
         CAD = cad,
         stringsAsFactors = FALSE
       )
