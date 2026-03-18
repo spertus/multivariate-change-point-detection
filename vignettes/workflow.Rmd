@@ -349,27 +349,26 @@ dgp_mvn_corr <- DGP(
 # generate data from the dgp
 x <- generate_stream(dgp_mvn_corr, N = N, K = K)
 
-# 
+# TODO: continue
 ```
 
 
-## Composite models
 
 ## Application to commodity prices
 
 ```{r}
-library(quantmod)
-
-# pull some prices, could add other commodities, oil, etc later
-getSymbols(c("PMAIZMTUSDM", "PSOYBUSDM", "PWHEAMTUSDM"), src = "FRED", 
-           from = "2005-01-01", 
-           to = "2026-01-01")
-
-# monthly prices
-prices <- apply.monthly(merge(PMAIZMTUSDM, PSOYBUSDM, PWHEAMTUSDM), colMeans, na.rm = T)
-colnames(prices) <- c("corn", "soybean", "wheat")
-returns <- diff(log(prices))
-plot(returns, legend.loc = "topright")
+# library(quantmod)
+# 
+# # pull some prices, could add other commodities, oil, etc later
+# getSymbols(c("PMAIZMTUSDM", "PSOYBUSDM", "PWHEAMTUSDM"), src = "FRED", 
+#            from = "2005-01-01", 
+#            to = "2026-01-01")
+# 
+# # monthly prices
+# prices <- apply.monthly(merge(PMAIZMTUSDM, PSOYBUSDM, PWHEAMTUSDM), colMeans, na.rm = T)
+# colnames(prices) <- c("corn", "soybean", "wheat")
+# returns <- diff(log(prices))
+# plot(returns, legend.loc = "topright")
 ```
 
 
