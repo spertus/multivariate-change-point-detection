@@ -1,3 +1,5 @@
+skip_if_not_integration()
+
 make_null_setup <- function() {
   model <- GaussianModel(mean_pre = 0, sd_pre = 1, mean_post = 1, sd_post = 1)
   tsm <- TSM(model)
@@ -39,8 +41,7 @@ test_that("composite Gaussian post model works through increment pipeline", {
     sd_pre = 1,
     mean_post = c(-1, 2),
     sd_post = 1,
-    method = "predictable",
-    update_window = 5
+    method = "predictable"
   )
   tsm <- TSM(model)
   x <- c(rnorm(50, 0, 1), rnorm(50, 1.5, 1))
@@ -60,8 +61,7 @@ test_that("multivariate composite Gaussian model works through joint increment p
     Sigma_pre = diag(K),
     mu_post = cbind(rep(-1, K), rep(2, K)),
     Sigma_post = NULL,
-    method = "predictable",
-    update_window = 5
+    method = "predictable"
   )
   tsm <- TSM(model)
   x <- cbind(c(rnorm(40, 0, 1), rnorm(40, 1.5, 1)),

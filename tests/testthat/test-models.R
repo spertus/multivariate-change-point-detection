@@ -50,53 +50,33 @@ test_that("Multivariate Gaussian model returns scalar density and valid incremen
   expect_gt(inc, 0)
 })
 
-test_that("Gaussian constructor supports mix_weight_adapt argument", {
+test_that("Gaussian constructor supports fixed prior weights in mixture mode", {
   m <- GaussianModel(
     mean_pre = 0,
     sd_pre = 1,
     mean_post = c(-1, 1),
     sd_post = 1,
     method = "mixture",
-    mix_weight_adapt = "none"
+    prior_weights = c(1, 2, 3, 4, 5),
+    grid_size = 5
   )
 
   expect_s4_class(m, "GaussianModel")
-  expect_identical(m@mix_weight_adapt, "none")
+  expect_equal(sum(m@prior_weights), 15)
 })
 
-test_that(".predictable_mean_estimate returns mean when inside bounds", {
-  x <- rnorm(100, 2, 1)
-  lag_mean <- .predictable_mean_estimate(
-    history = x,
-    update_window = 5,
-    lower = 0,
-    upper = 3,
-    init_mean = 0
-  )
-  lag_bound_mean <- .predictable_mean_estimate(
-    history = x,
-    update_window = 5,
-    lower = 0,
-    upper = 1,
-    init_mean = 0
-  )
-  expect_equal(lag_mean, mean(x))
-  expect_equal(lag_bound_mean, 1)
-})
-
-test_that("Gaussian composite post model (predictable) respects update window", {
+test_that("Gaussian composite post model (predictable) uses full lagged history", {
   m <- GaussianModel(
     mean_pre = 0,
     sd_pre = 1,
     mean_post = c(-1, 2),
     sd_post = 1,
-    method = "predictable",
-    update_window = 2
+    method = "predictable"
   )
 
   h <- c(2, 2, -1)
   inc <- likelihood_increment(m, x = 2, history = h)
-  ref <- dnorm(2, mean = 2, sd = 1) / dnorm(2, mean = 0, sd = 1)
+  ref <- dnorm(2, mean = mean(h), sd = 1) / dnorm(2, mean = 0, sd = 1)
   expect_equal(inc, ref, tolerance = 1e-10)
 })
 
@@ -123,8 +103,7 @@ test_that("Gaussian composite post model can estimate post-change sd from lagged
     sd_pre = 1,
     mean_post = c(-1, 2),
     sd_post = numeric(0),
-    method = "predictable",
-    update_window = 3
+    method = "predictable"
   )
 
   inc <- likelihood_increment(m, x = 2, history = c(2, 2, 2, -1))
@@ -139,8 +118,7 @@ test_that("Multivariate Gaussian composite post model supports box constraints a
     Sigma_pre = diag(K),
     mu_post = cbind(c(-1, -1), c(2, 2)),
     Sigma_post = NULL,
-    method = "predictable",
-    update_window = 2
+    method = "predictable"
   )
 
   h <- rbind(c(0.2, 0.1), c(0.3, 0.1), c(0.25, 0.2))
