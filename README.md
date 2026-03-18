@@ -1,6 +1,6 @@
 # multichangepoints
 
-`multichangepoints` is an S4-first R package scaffold for modular sequential change-point detection with:
+`multichangepoints` is an R package scaffold for multivariate sequential change-point detection via test supermartingales. It is modularized into: 
 
 - model classes (`GaussianModel`, `MultivariateGaussianModel`, `BernoulliModel`, `AR1Model`)
 - test supermartingales (`TSM`)
