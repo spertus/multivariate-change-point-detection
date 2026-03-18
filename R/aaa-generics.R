@@ -87,6 +87,18 @@ setGeneric("combine_streams", function(object, streams, weights = NULL, log = FA
   standardGeneric("combine_streams")
 })
 
+# Generic: compute_bets
+# purpose: compute a predictable bet sequence for a bounded betting TSM
+# inputs:
+#   object = Bets subclass instance
+#   x      = numeric vector of observations in [0, 1]
+#   eta    = numeric scalar null mean (upper bound on the pre-change mean)
+# outputs:
+#   numeric length-N vector of bets lambda_t (predictable: lambda_t depends only on x[1:(t-1)])
+setGeneric("compute_bets", function(object, x, eta) {
+  standardGeneric("compute_bets")
+})
+
 # Generic: generate_stream
 # purpose: generate synthetic stream(s) from a DGP object
 # inputs:

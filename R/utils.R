@@ -39,6 +39,28 @@
   p * (1 - p)^(idx - 1L)
 }
 
+# Internal helper: .lag_mean_sd
+# purpose: compute lagged running mean and biased SD of a sequence
+# inputs:
+#   x    = numeric vector of observations
+#   mu_0 = numeric scalar, default mean inserted at position 1 (before any data)
+#   sd_0 = numeric scalar, default SD inserted at position 1 (before any data)
+# outputs:
+#   list with elements:
+#     mean = numeric length-n vector of lagged running means
+#     sd   = numeric length-n vector of lagged running biased SDs
+.lag_mean_sd <- function(x, mu_0 = 0.5, sd_0 = 0.25) {
+  n <- length(x)
+  if (n == 0L) return(list(mean = numeric(0), sd = numeric(0)))
+  t       <- seq_len(n)
+  mu_hat  <- cumsum(x) / t
+  sum_sq  <- cumsum(x^2)
+  var_hat <- pmax(sum_sq / t - mu_hat^2, 0)
+  lag_mean <- c(mu_0, mu_hat[-n])
+  lag_sd   <- c(sd_0, sqrt(var_hat[-n]))
+  list(mean = lag_mean, sd = lag_sd)
+}
+
 # Internal helper: .composition_grid
 # purpose: enumerate integer compositions of m across K dimensions
 # inputs:
