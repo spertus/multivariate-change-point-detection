@@ -41,14 +41,15 @@ test_that("universal portfolio combiner is positive", {
 
 test_that("product beats universal portfolio beats average", {
   s1 <- runif(20, 0.9, 1.3)
-  s2 <- runif(20, 0.9, 1.3)
+  s2 <- runif(20, 0.3, 1.9)
+  s3 <- runif(20, 0.9, 1.9)
 
   p <- ProductCombiner()
   a <- AverageCombiner()
   up <- UniversalPortfolioCombiner(resolution = 4)
-  z_p <- combine_streams(p, cbind(s1, s2))
-  z_a <- combine_streams(a, cbind(s1, s2))
-  z_up <- combine_streams(up, cbind(s1, s2))
+  z_p <- combine_streams(p, cbind(s1, s2, s3))
+  z_a <- combine_streams(a, cbind(s1, s2, s3))
+  z_up <- combine_streams(up, cbind(s1, s2, s3))
   expect_true(all(z_p > 0))
   expect_true(all(z_up > 0))
   expect_true(all(z_a > 0))
