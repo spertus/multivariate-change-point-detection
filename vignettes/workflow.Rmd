@@ -368,7 +368,7 @@ det_prd <- run_detector(sr_comb, inc_prd, log = TRUE)
 det_up  <- run_detector(sr_comb, inc_up,  log = TRUE)
 ```
 
-```{r combining figure, fig.cap="Combining marginal TSMs under sparse change (stream 1 only). Product combining matches the oracle; universal portfolio adapts toward it; average combining is roughly K-times weaker."}
+```{r combining figure, fig.cap="Combining marginal TSMs under sparse change (stream 1 only). Product combining matches the oracle."}
 old_par <- par(mfrow = c(1, 3))
 
 # Panel 1: data streams (same data as above)
