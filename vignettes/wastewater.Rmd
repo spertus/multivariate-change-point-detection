@@ -21,16 +21,17 @@ knitr::opts_chunk$set(
 ```{r packages}
 library(tidyverse)
 library(ggplot2)
+library(knitr)
 ```
 
 ## Introduction
 
 Wastewater-based epidemiology (WBE) monitors the concentration of pathogen
 genetic material — such as SARS-CoV-2 RNA — in municipal wastewater.
-Because viral shedding into sewage precedes clinical case reporting by days
+Because viral shedding into sewage can precede clinical case reporting by days
 to weeks, surveillance networks that continuously sample and sequence
 wastewater at multiple sites can provide an early-warning signal of emerging
-or resurging outbreaks.
+or resurging outbreaks, and identify which sites are effected in order to triage resources.
 
 From a statistical perspective, a national WBE network yields a
 **multivariate data stream**: at each time point $t$ (here, each
@@ -39,7 +40,7 @@ $K$ monitoring sites. The surveillance task has two components:
 
 1. **Change-point detection** — raise an alarm as soon as the data depart
    from a baseline regime, controlling a type-I error criterion such as the
-   false alarm probability (PFA) or the average run length under the null
+   probability of false alarm (PFA) or the average run length under the null
    (ARL).
 
 2. **Stream identification** — after (or concurrent with) an alarm,
@@ -59,9 +60,9 @@ guarantees the desired error control.
 ## Data
 
 The dataset `wastewater_aggregate.csv` is published by the Public Health
-Agency of Canada and aggregates weekly wastewater measurements from
-monitoring sites across Canada.  Each row is one (site, week, pathogen)
-observation.  Key columns:
+Agency of Canada, and aggregating weekly wastewater measurements from
+monitoring sites across Canada.  
+Each row contains one observation indexed by `site` $\times$ `week` $\times$ `pathogen`.  Key columns:
 
 | Column | Description |
 |---|---|
@@ -72,10 +73,11 @@ observation.  Key columns:
 | `w_avg` | Weekly average viral signal (copies / mL, log10-transformed at source) |
 
 ```{r load-data}
+#NB: data dictionary says empty sites indicate aggregates, but there are no empty sites
 ww <- read_csv(
   here::here("Data", "wastewater_aggregate.csv"),
   show_col_types = FALSE
-) |>
+) %>%
   mutate(weekstart = as.Date(weekstart))
 ```
 
@@ -90,6 +92,9 @@ The data span `r format(min(ww$weekstart), "%B %Y")` to
 and include four pathogen markers:
 `r paste(unique(ww$measureid), collapse = ", ")`.
 
+There are `length(unique(ww$site))` sites in total, with varying numbers of observations depending on when monitoring started and whether they are missing any data.
+
+
 ---
 
 ## COVID-19 (covN2)
@@ -98,8 +103,8 @@ We filter to the SARS-CoV-2 N2 gene target and remove the national-aggregate
 rows (blank site name), retaining only site-level observations.
 
 ```{r filter-covid}
-cov <- ww |>
-  filter(measureid == "covN2", site != "") |>
+cov <- ww %>%
+  filter(measureid == "covN2", site != "") %>%
   mutate(province = if_else(province == "", NA_character_, province))
 
 cat(
@@ -110,17 +115,64 @@ cat(
 )
 ```
 
+### Number of observations
+
+Sites vary in their number of observations primarily because monitoring started at different times at different sites, but also because some weeks are missing measurements.
+
+```{r observations per site, fig.height = 3.5, fig.cap = "Distribution of observation counts per monitoring site across all pathogens."}
+site_counts <- ww %>%
+  filter(site != "") %>%
+  filter(measureid == "covN2") %>%
+  group_by(site) %>%
+  summarize(count = n(), .groups = "drop")
+
+ggplot(site_counts, aes(x = count)) +
+  geom_histogram(
+    binwidth = 25,
+    fill     = "#2E86C1",
+    colour   = "white",
+    linewidth = 0.3
+  ) +
+  geom_vline(
+    xintercept = median(site_counts$count),
+    linetype   = "dashed",
+    colour     = "firebrick",
+    linewidth  = 0.8
+  ) +
+  annotate(
+    "text",
+    x      = median(site_counts$count) + 8,
+    y      = Inf,
+    label  = paste0("median = ", median(site_counts$count)),
+    vjust  = 1.5,
+    hjust  = 0,
+    colour = "firebrick",
+    size   = 3.5
+  ) +
+  scale_x_continuous(expand = expansion(mult = c(0, 0.02))) +
+  scale_y_continuous(expand = expansion(mult = c(0, 0.05))) +
+  labs(
+    x     = "Weeks observed per site (all pathogens)",
+    y     = "Number of sites",
+    title = "How many observations does each site have?"
+  ) +
+  theme_bw(base_size = 11) +
+  theme(panel.grid.minor = element_blank())
+```
+
+
 ### Trend overview — all sites
 
 The plot below shows weekly COVID signal (`w_avg`) at every monitoring site
-as a thin semi-transparent line, with the national aggregate overlaid in
+as a thin semi-transparent line, with the national average overlaid in
 bold.  Vertical dashed lines mark approximate Omicron wave peaks for
 reference.
 
 ```{r plot-all-sites, fig.height = 4.5, fig.cap = "Weekly SARS-CoV-2 wastewater signal at all Canadian monitoring sites (covN2). Each gray line is one site; the national aggregate (bold blue) reflects the country-wide trajectory."}
 
-national <- ww |>
-  filter(measureid == "covN2", site == "") |>
+national <- ww %>%
+  group_by(weekstart) %>%
+  summarize(w_avg = mean(w_avg)) %>%
   mutate(province = "National")
 
 ggplot() +
@@ -154,7 +206,7 @@ ggplot() +
     y       = "Weekly average signal (copies / mL)",
     title   = "SARS-CoV-2 wastewater signal — all Canadian sites",
     caption = "Gray: individual sites.  Bold blue: national aggregate.
-Dashed red: approximate Omicron BA.1 / BA.2 / BA.4-5 wave peaks."
+Dashed red: approximate Omicron BA.1 / BA.2 / BA.4-5 wave peaks (source: https://onlinelibrary.wiley.com/doi/10.1111/irv.70197)."
   ) +
   theme_bw(base_size = 11) +
   theme(
@@ -181,8 +233,8 @@ province_order <- c(
   "Yukon"
 )
 
-cov_prov <- cov |>
-  filter(!is.na(province)) |>
+cov_prov <- cov %>%
+  filter(!is.na(province)) %>%
   mutate(province = factor(province, levels = province_order))
 
 ggplot(cov_prov, aes(x = weekstart, y = w_avg,
