@@ -1,0 +1,221 @@
+---
+title: "Wastewater Surveillance as a Multivariate Change-Point Problem"
+output: rmarkdown::html_vignette
+vignette: >
+  %\VignetteIndexEntry{Wastewater Surveillance as a Multivariate Change-Point Problem}
+  %\VignetteEngine{knitr::rmarkdown}
+  %\VignetteEncoding{UTF-8}
+---
+
+```{r setup, include = FALSE}
+knitr::opts_chunk$set(
+  collapse  = TRUE,
+  comment   = "#>",
+  fig.width = 9,
+  fig.height = 5,
+  message   = FALSE,
+  warning   = FALSE
+)
+```
+
+```{r packages}
+library(tidyverse)
+library(ggplot2)
+```
+
+## Introduction
+
+Wastewater-based epidemiology (WBE) monitors the concentration of pathogen
+genetic material — such as SARS-CoV-2 RNA — in municipal wastewater.
+Because viral shedding into sewage precedes clinical case reporting by days
+to weeks, surveillance networks that continuously sample and sequence
+wastewater at multiple sites can provide an early-warning signal of emerging
+or resurging outbreaks.
+
+From a statistical perspective, a national WBE network yields a
+**multivariate data stream**: at each time point $t$ (here, each
+epidemiological week), we observe a measurement $X_{tk}$ at each of
+$K$ monitoring sites. The surveillance task has two components:
+
+1. **Change-point detection** — raise an alarm as soon as the data depart
+   from a baseline regime, controlling a type-I error criterion such as the
+   false alarm probability (PFA) or the average run length under the null
+   (ARL).
+
+2. **Stream identification** — after (or concurrent with) an alarm,
+   determine *which* sites $k$ are driving the change, so that public-health
+   resources can be directed appropriately.
+
+The `multichangepoints` package is designed for exactly this setting.
+A univariate test supermartingale (TSM) is built for each site,
+marginal increment sequences are combined across sites
+(via `ProductCombiner`, `AverageCombiner`, or `UniversalPortfolioCombiner`),
+and a single `ShiryaevRobertsDetector` monitors the combined evidence
+sequentially — stopping as soon as the evidence crosses a threshold that
+guarantees the desired error control.
+
+---
+
+## Data
+
+The dataset `wastewater_aggregate.csv` is published by the Public Health
+Agency of Canada and aggregates weekly wastewater measurements from
+monitoring sites across Canada.  Each row is one (site, week, pathogen)
+observation.  Key columns:
+
+| Column | Description |
+|---|---|
+| `site` | Monitoring location |
+| `province` | Canadian province / territory |
+| `weekstart` | Monday of the epidemiological week |
+| `measureid` | Pathogen marker (`covN2`, `fluA`, `fluB`, `rsv`) |
+| `w_avg` | Weekly average viral signal (copies / mL, log10-transformed at source) |
+
+```{r load-data}
+ww <- read_csv(
+  here::here("Data", "wastewater_aggregate.csv"),
+  show_col_types = FALSE
+) |>
+  mutate(weekstart = as.Date(weekstart))
+```
+
+```{r head}
+head(ww)
+```
+
+The data span `r format(min(ww$weekstart), "%B %Y")` to
+`r format(max(ww$weekstart), "%B %Y")`, cover
+`r length(unique(ww$site[ww$site != ""]))` monitoring sites across
+`r length(unique(ww$province[ww$province != ""]))` provinces and territories,
+and include four pathogen markers:
+`r paste(unique(ww$measureid), collapse = ", ")`.
+
+---
+
+## COVID-19 (covN2)
+
+We filter to the SARS-CoV-2 N2 gene target and remove the national-aggregate
+rows (blank site name), retaining only site-level observations.
+
+```{r filter-covid}
+cov <- ww |>
+  filter(measureid == "covN2", site != "") |>
+  mutate(province = if_else(province == "", NA_character_, province))
+
+cat(
+  "Sites:", n_distinct(cov$site), "\n",
+  "Provinces:", n_distinct(cov$province, na.rm = TRUE), "\n",
+  "Weeks:", n_distinct(cov$weekstart), "\n",
+  "Rows:", nrow(cov), "\n"
+)
+```
+
+### Trend overview — all sites
+
+The plot below shows weekly COVID signal (`w_avg`) at every monitoring site
+as a thin semi-transparent line, with the national aggregate overlaid in
+bold.  Vertical dashed lines mark approximate Omicron wave peaks for
+reference.
+
+```{r plot-all-sites, fig.height = 4.5, fig.cap = "Weekly SARS-CoV-2 wastewater signal at all Canadian monitoring sites (covN2). Each gray line is one site; the national aggregate (bold blue) reflects the country-wide trajectory."}
+
+national <- ww |>
+  filter(measureid == "covN2", site == "") |>
+  mutate(province = "National")
+
+ggplot() +
+  # Individual sites
+  geom_line(
+    data  = cov,
+    aes(x = weekstart, y = w_avg, group = site),
+    colour = "gray60", alpha = 0.35, linewidth = 0.35
+  ) +
+  # National aggregate
+  geom_line(
+    data      = national,
+    aes(x = weekstart, y = w_avg),
+    colour    = "#1A5276",
+    linewidth = 1.1
+  ) +
+  # Approximate Omicron wave peaks (BA.1, BA.2, BA.4/5)
+  geom_vline(
+    xintercept = as.Date(c("2022-01-09", "2022-04-03", "2022-07-17")),
+    linetype   = "dashed",
+    colour     = "firebrick",
+    alpha      = 0.55
+  ) +
+  scale_x_date(date_breaks = "6 months", date_labels = "%b %Y") +
+  scale_y_continuous(
+    labels = scales::label_comma(),
+    expand = expansion(mult = c(0, 0.05))
+  ) +
+  labs(
+    x       = NULL,
+    y       = "Weekly average signal (copies / mL)",
+    title   = "SARS-CoV-2 wastewater signal — all Canadian sites",
+    caption = "Gray: individual sites.  Bold blue: national aggregate.
+Dashed red: approximate Omicron BA.1 / BA.2 / BA.4-5 wave peaks."
+  ) +
+  theme_bw(base_size = 11) +
+  theme(
+    axis.text.x     = element_text(angle = 30, hjust = 1),
+    plot.caption    = element_text(colour = "gray40", size = 8),
+    panel.grid.minor = element_blank()
+  )
+```
+
+### Trends by province
+
+With 76 sites on a single panel the regional variation is hard to see.
+The faceted plot below shows one line per site within each province,
+making it easier to assess synchrony and heterogeneity of outbreaks.
+
+```{r plot-by-province, fig.height = 9, fig.width = 10, fig.cap = "SARS-CoV-2 wastewater signal by province. Each line is one monitoring site; colour distinguishes sites within a province."}
+
+# Provinces with at least some data — ordered W → E then territories
+province_order <- c(
+  "British Columbia", "Alberta", "Saskatchewan", "Manitoba",
+  "Ontario", "Quebec",
+  "New Brunswick", "Nova Scotia", "Prince Edward Island",
+  "Newfoundland and Labrador",
+  "Yukon"
+)
+
+cov_prov <- cov |>
+  filter(!is.na(province)) |>
+  mutate(province = factor(province, levels = province_order))
+
+ggplot(cov_prov, aes(x = weekstart, y = w_avg,
+                     colour = site, group = site)) +
+  geom_line(linewidth = 0.55, alpha = 0.8) +
+  facet_wrap(~ province, ncol = 3, scales = "free_y") +
+  scale_x_date(date_breaks = "1 year", date_labels = "%Y") +
+  scale_y_continuous(
+    labels = scales::label_comma(),
+    expand = expansion(mult = c(0, 0.05))
+  ) +
+  scale_colour_viridis_d(option = "turbo", guide = "none") +
+  labs(
+    x     = NULL,
+    y     = "Weekly average signal (copies / mL)",
+    title = "SARS-CoV-2 wastewater signal by province",
+    subtitle = "Each line = one monitoring site  |  y-axis free within panel"
+  ) +
+  theme_bw(base_size = 10) +
+  theme(
+    axis.text.x      = element_text(angle = 30, hjust = 1, size = 8),
+    strip.background = element_rect(fill = "#D6EAF8"),
+    strip.text       = element_text(face = "bold", size = 9),
+    panel.grid.minor = element_blank()
+  )
+```
+
+The wave structure is broadly synchronous across provinces — consistent with
+a national-level change in pathogen prevalence — but the magnitude and
+timing of individual site peaks vary, reflecting local population sizes,
+sampling frequency, and catchment characteristics.  This heterogeneity
+motivates a **multi-stream approach**: rather than pooling sites into a
+single signal, the `multichangepoints` framework tests each site
+sequentially and combines the evidence in a principled way, allowing the
+detector to remain powerful even when only a subset of sites shows an
+elevated signal.
