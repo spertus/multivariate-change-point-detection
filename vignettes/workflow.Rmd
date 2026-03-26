@@ -211,7 +211,7 @@ This returns Monte Carlo summaries including:
 Simple-vs-simple multivariate detection. 
 Note that when the alternative is mis-specified, the helper TSM does not grow and the detector can be very inefficient. 
 
-```{r}
+```{r multivariate detection}
 K <- 3 # number of streams
 N <- 50 # length of streams
 dgp_mvn <- DGP(
@@ -272,7 +272,7 @@ det_out_comp_pred <- run_detector(sr, inc_comp_pred, log = TRUE)
 det_out_comp_mix <- run_detector(sr, inc_comp_mix, log = TRUE)
 ```
 
-```{r fig.cap="Multivariate data, helper TSMs, and detector statistics (true vs mis-specified alternative)."}
+```{r multivariate normal figure, fig.cap="Multivariate data, helper TSMs, and detector statistics (true vs mis-specified alternative)."}
 old_par <- par(mfrow = c(1, 3))
 
 # Panel 1: K data streams
@@ -329,47 +329,114 @@ par(old_par)
 
 ## Combining
 
-```{r}
-K <- 3 # number of streams
-N <- 50 # length of streams
-# generate multivariate normal data on [0,1]
-dgp_mvn_corr <- DGP(
-  generator = default_multivariate_gaussian_dgp,
-  pre_params = list(mu = c(0.5, 0.5, 0.5), 
-                    Sigma = matrix(
-                            c(1.0,  0.5,  0.3,
-                              0.5,  1.2,  0.4,
-                              0.3,  0.4,  0.8)/20, nrow = 3, byrow = TRUE)
-                    ), # parameters pre-change
-  post_params = list(mu = c(0.6, 0.6, 0.6), Sigma = diag(K)/20), # parameters post-change
-  nu = 25, # change-point
-  name = "mv-gauss-change"
-)
+The same `x` from above has K = 3 independent Gaussian streams with a sparse change: only stream 1
+shifts from mean 0 to mean 1. We fit a marginal simple-vs-simple TSM for each stream using the true
+marginal parameters, then combine the resulting increment sequences three ways:
+product (assumes independence), average (valid under arbitrary dependence), and universal portfolio
+(valid under arbitrary dependence, adapts weights online).
 
-# generate data from the dgp
-x <- generate_stream(dgp_mvn_corr, N = N, K = K)
+```{r combining}
+# ---- marginal models, one per stream, from the MVN DGP parameters ----
+mu_pre  <- dgp_mvn@pre_params$mu
+mu_post <- dgp_mvn@post_params$mu
+sd_pre  <- sqrt(diag(dgp_mvn@pre_params$Sigma))
+sd_post <- sqrt(diag(dgp_mvn@post_params$Sigma))
 
-# 
+marg_tsms <- lapply(seq_len(K), function(k) {
+  TSM(GaussianModel(
+    mean_pre  = mu_pre[k],
+    sd_pre    = sd_pre[k],
+    mean_post = mu_post[k],
+    sd_post   = sd_post[k]
+  ))
+})
+
+# marginal log-increments: N x K matrix (one column per stream)
+marg_inc <- sapply(seq_len(K), function(k) {
+  compute_increments(marg_tsms[[k]], x[, k], log = TRUE)
+})
+
+# ---- combine marginal increments ----
+inc_avg <- combine_streams(AverageCombiner(),            marg_inc, log = TRUE)
+inc_prd <- combine_streams(ProductCombiner(),            marg_inc, log = TRUE)
+inc_up  <- combine_streams(UniversalPortfolioCombiner(), marg_inc, log = TRUE)
+
+# ---- run the same detector on each combined sequence ----
+sr_comb <- ShiryaevRobertsDetector(alpha = 0.001, criterion = "ARL")
+det_avg <- run_detector(sr_comb, inc_avg, log = TRUE)
+det_prd <- run_detector(sr_comb, inc_prd, log = TRUE)
+det_up  <- run_detector(sr_comb, inc_up,  log = TRUE)
+```
+
+```{r combining figure, fig.cap="Combining marginal TSMs under sparse change (stream 1 only). Product combining matches the oracle."}
+old_par <- par(mfrow = c(1, 3))
+
+# Panel 1: data streams (same data as above)
+matplot(x, type = "l", lty = 1, lwd = 1.5,
+        xlab = "time", ylab = "x_tk", main = "Data Streams", ylim = c(-3, 3))
+abline(v = dgp_mvn@nu, lty = 2, col = "gray40")
+legend("topleft",
+       legend = paste0("stream ", seq_len(K)),
+       col = seq_len(K), lty = 1, lwd = 1.5, cex = 0.8, bty = "n")
+
+# Panel 2: combined TSM paths
+tsm_avg <- increments_to_tsm(inc_avg, log = TRUE)
+tsm_prd <- increments_to_tsm(inc_prd, log = TRUE)
+tsm_up  <- increments_to_tsm(inc_up,  log = TRUE)
+
+ylim_tsm <- range(c(tsm_avg, tsm_prd, tsm_up))
+plot(tsm_prd, type = "l", lwd = 2, col = "darkgreen",
+     xlab = "time", ylab = "log combined TSM", main = "Combined TSMs",
+     ylim = ylim_tsm)
+lines(tsm_up,  lwd = 2, col = "firebrick")
+lines(tsm_avg, lwd = 2, col = "steelblue")
+abline(v = dgp_mvn@nu, lty = 2, col = "gray40")
+legend("topleft",
+       legend = c("product", "universal portfolio", "average"),
+       col    = c("darkgreen", "firebrick", "steelblue"),
+       lty = 1, lwd = 2, cex = 0.8, bty = "n")
+
+# Panel 3: S-R statistics
+ylim_sr <- range(c(det_avg$statistic, det_prd$statistic, det_up$statistic))
+plot(det_prd$statistic, type = "l", lwd = 2, col = "darkgreen",
+     xlab = "time", ylab = "log R_t", main = "S-R Statistics",
+     ylim = ylim_sr)
+lines(det_up$statistic,  lwd = 2, col = "firebrick")
+lines(det_avg$statistic, lwd = 2, col = "steelblue")
+abline(h = log(sr_comb@threshold), lty = 3, col = "gray40")
+abline(v = dgp_mvn@nu, lty = 2, col = "gray40")
+for (res in list(list(d = det_prd, col = "darkgreen"),
+                 list(d = det_up,  col = "firebrick"),
+                 list(d = det_avg, col = "steelblue"))) {
+  if (is.finite(res$d$stopping_time)) {
+    abline(v = res$d$stopping_time, lwd = 1.5, col = res$col)
+  }
+}
+legend("topleft",
+       legend = c("product", "universal portfolio", "average"),
+       col    = c("darkgreen", "firebrick", "steelblue"),
+       lty = 1, lwd = 2, cex = 0.8, bty = "n")
+
+par(old_par)
 ```
 
 
-## Composite models
 
-## Application to commodity prices
+<!-- ## Application to commodity prices -->
 
-```{r}
-library(quantmod)
+<!-- ```{r} -->
+<!-- library(quantmod) -->
 
-# pull some prices, could add other commodities, oil, etc later
-getSymbols(c("PMAIZMTUSDM", "PSOYBUSDM", "PWHEAMTUSDM"), src = "FRED", 
-           from = "2005-01-01", 
-           to = "2026-01-01")
+<!-- # pull some prices, could add other commodities, oil, etc later -->
+<!-- getSymbols(c("PMAIZMTUSDM", "PSOYBUSDM", "PWHEAMTUSDM"), src = "FRED", -->
+<!--            from = "2005-01-01", -->
+<!--            to = "2026-01-01") -->
 
-# monthly prices
-prices <- apply.monthly(merge(PMAIZMTUSDM, PSOYBUSDM, PWHEAMTUSDM), colMeans, na.rm = T)
-colnames(prices) <- c("corn", "soybean", "wheat")
-returns <- diff(log(prices))
-plot(returns, legend.loc = "topright")
-```
+<!-- # monthly prices -->
+<!-- prices <- apply.monthly(merge(PMAIZMTUSDM, PSOYBUSDM, PWHEAMTUSDM), colMeans, na.rm = T) -->
+<!-- colnames(prices) <- c("corn", "soybean", "wheat") -->
+<!-- returns <- diff(log(prices)) -->
+<!-- plot(returns, legend.loc = "topright") -->
+<!-- ``` -->
 
 
