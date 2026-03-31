@@ -25,6 +25,11 @@ library(knitr) # for rendering vignette + tables
 library(canadianmaps) # for mapping canadian cities
 library(sf) # for spatial vector data (mapping)
 library(maps) # for database of world cities
+
+#multichangepoints from Github
+devtools::load_all("~/Dropbox/CANSSI/multi-change-points/")
+library(multichangepoints)
+set.seed(20260305)
 ```
 
 ## Introduction
@@ -360,13 +365,67 @@ summary(missing_by_site$pct_missing)
 
 # Change-point detection for WBE
 
-```{r remove trend for weekly data}
-# checking data transformations that lead to independent and bounded innovations
-cov_change <- national %>% 
-  select(province, weekstart, w_avg) %>%
+Change-point detection with WBE data is a major challenge because it is very difficult to identify the 'state of control' that is supposed to be captured by the pre-change model. 
+The state of control ought to be specified as a simple or composite model based on epidemic-free data. 
+Since we have multiple sites, we might try to make some kind of 'synthetic state of control' by synthesizing data across sites that were epidemic-free at various times. 
+Unfortunately, this is subject to the uncertainties inherent in wastewater surveillance across multiple sites [Joung et al (2023)](https://pmc.ncbi.nlm.nih.gov/articles/PMC10890812/pdf/CCDR-49-166.pdf), including:
+
+- **Sampling**: The methods of sample collection, shipping, and storage (compositing vs grab sampling, location, timing, shipping temperature, distance to lab, missing data), which may vary across sites and time.
+- **Analysis**: Laboratory analysis variability (de-gritting subsampling, homogenization, instrument error, human error).
+- **Structural**: The location and engineering of sewage systems and wastewater treatment plants (catchment area size and population, combined or separate ('sanitary') collection of runoff and wastewater).
+- **Weather**: Weather conditions (rainwater or snowmelt contributing to influent, temperature, pH), which vary across sites and seasons, with some degree of stochasticity. 
+
+In the literature, these uncertainties are dealt with under the rubric of _normalization_, which is an active and un-clarified area of research. 
+In some sense, defining a proper state of control from which deviations are meaningful is the whole challenge of WBE. 
+It may be easier to define the state of control for certain sites, like those with sanitary sewage systems that are less influenced by major weather events. 
+
+
+For any given site, we could imagine an ideal way to establish its state of control via _potential outcomes_. In one potential outcome, the site experiences a COVID epidemic and in another epidemic the site experiences no COVID epidemic (or some kind of endemic state, both of these are very rough definitions). 
+This is, of course, impossible in reality; we cannot even imagine a reasonable experiment because there is no way to manipulate the hypothetical intervention 'COVID epidemic'. 
+This could be considered a problem in _observational causal inference_. 
+One way to establish the state of control is through some kind of matching, wherein we find pairs site that are similar along various axes likely to effect background rates (collection, engineering, weather, etc); but in one site there is no epidemic and in another site there is an epidemic. 
+We could also do this by site-periods, with sites serving as their own control over periods where they are epidemic free.
+Another way is to fit models for the state of control. 
+This is attempted below. 
+In either case, establishing a meaningful state of control (a simple or composite pre-change model) should be done separately from running a change-point algorithm, which can detect deviations but cannot define the state of control without a user. 
+
+
+
+```{r remove trend and model as AR(1)}
+# 1. start with a single site with no missing data (Vancouver)
+site_series <- cov %>%
+  filter(site == "Vancouver Lions Gate") %>%
   arrange(weekstart) %>%
-  mutate(lag_w_avg = lag(w_avg)) %>%
-  mutate(log_change = log1p(w_avg) - log1p(lag_w_avg))
+  mutate(y = log1p(w_avg)) %>%
+  mutate(log_change = y - lag(y)) %>%
+  filter(!is.na(log_change))
+
+x <- site_series$log_change # time series is the log change in concentrations
+
+# 2. Fit AR(2) using arima() (degree determined by AIC)
+fit <- arima(x, order = c(2, 0, 0))
+resid <- residuals(fit)
+
+# Fit diagnostics
+Box.test(resid, lag = 10, type = "Ljung-Box")
+par(mfrow = c(2, 2))
+plot(resid, type = "l", main = "Residuals over time")
+acf(resid, main = "ACF of residuals")
+pacf(resid, main = "PACF of residuals")
+qqnorm(resid); qqline(resid)
+```
+
+```{r detector on residuals}
+# point estimate of nuisance parameter 
+sigma_hat <- fit$sigma2
+model <- GaussianModel(
+  mean_pre = 0,
+  sd_pre = sigma_hat,
+  mean_post = c(0, 1), # this captures a one-sided alternative, that the rate of change increases
+  sd_post = sigma_hat,
+  method = "predictable"
+)
+increments <- compute_increments(TSM(model), x, log = TRUE)
 ```
 
 
