@@ -19,9 +19,12 @@ knitr::opts_chunk$set(
 ```
 
 ```{r packages}
-library(tidyverse)
-library(ggplot2)
-library(knitr)
+library(tidyverse) # for data handling
+library(ggplot2) # for plotting
+library(knitr) # for rendering vignette + tables
+library(canadianmaps) # for mapping canadian cities
+library(sf) # for spatial vector data (mapping)
+library(maps) # for database of world cities
 ```
 
 ## Introduction
@@ -115,49 +118,98 @@ cat(
 )
 ```
 
-### Number of observations
+
+### Sampling locations and number of observations
 
 Sites vary in their number of observations primarily because monitoring started at different times at different sites, but also because some weeks are missing measurements.
 
-```{r observations per site, fig.height = 3.5, fig.cap = "Distribution of observation counts per monitoring site across all pathogens."}
-site_counts <- ww %>%
-  filter(site != "") %>%
-  filter(measureid == "covN2") %>%
-  group_by(site) %>%
-  summarize(count = n(), .groups = "drop")
+```{r observations per site, fig.height = 6, fig.width = 9, fig.cap = "Canadian wastewater monitoring sites. Point size reflects the number of observations of COVID-19 viral loads; province abbreviations from canadianmaps."}
 
-ggplot(site_counts, aes(x = count)) +
-  geom_histogram(
-    binwidth = 25,
-    fill     = "#2E86C1",
-    colour   = "white",
-    linewidth = 0.3
+# ---- observation counts per site -------------------------------------------
+site_counts <- ww %>%
+  filter(site != "", measureid == "covN2") %>%
+  group_by(site, city, province) %>%
+  summarize(count = n()) %>%
+  mutate(city_clean = trimws(city))
+
+# ---- geocode: auto-match city names from maps::world.cities ----------------
+ca_cities <- world.cities[world.cities$country.etc == "Canada", ]
+
+# joins cities by name and take largest if there are any repeats
+site_geo <- site_counts %>%
+  left_join(
+    ca_cities %>% select(name, lat, long, pop),
+    by = c("city_clean" = "name"),
+    relationship = "many-to-many"
+  ) %>%
+  group_by(site) %>%
+  slice_max(pop, n = 1, with_ties = FALSE) %>%
+  ungroup()
+
+# ---- manual coordinates for the 18 unmatched sites -------------------------
+manual_coords <- tribble(
+  ~site,                                        ~lat,    ~long,
+  "Battery Point",                              46.14,  -60.19,
+  "Battleford",                                 52.73, -108.30,
+  "Birch Hills",                                52.98, -105.44,
+  "City of Charlottetown and Town of Stratford",46.24,  -63.13,
+  "Dominion-Bridgeport",                        46.13,  -60.00,
+  "Miramichi",                                  47.02,  -65.50,
+  "Pasqua",                                     50.58, -103.98,
+  "Peel G.E. Booth",                            43.73,  -79.72,
+  "Southey",                                    50.95, -104.49,
+  "St. John's",                                 47.56,  -52.71,
+  "St. Stephen",                                45.20,  -67.28,
+  "Trenton",                                    45.61,  -62.63,
+  "Vancouver Annacis Island",                   49.17, -122.92,
+  "Vancouver Iona Island",                      49.22, -123.21,
+  "Vancouver Lions Gate",                       49.35, -123.13,
+  "Vancouver Lulu Island",                      49.14, -123.19,
+  "Vancouver Northwest Langley",                49.17, -122.60,
+  "\u00cele-\u00e0-la-Crosse",                  55.45, -107.89
+)
+
+site_geo <- site_geo %>%
+  rows_update(manual_coords, by = "site", unmatched = "ignore") %>%
+  filter(!is.na(lat))
+
+# ---- project points into the canadianmaps Lambert CRS ----------------------
+lcc_crs <- "+proj=lcc +lat_1=49 +lat_2=77 +lon_0=-91.52 +x_0=0 +y_0=0 +datum=NAD83 +units=m +no_defs"
+
+sites_sf <- site_geo %>%
+  st_as_sf(coords = c("long", "lat"), crs = 4326) %>%
+  st_transform(crs = lcc_crs)
+
+# ---- map -------------------------------------------------------------------
+ggplot() +
+  geom_prov(fill = "gray93", colour = "gray60", size = 0.25) +
+  geom_sf(
+    data   = sites_sf,
+    aes(size = count),
+    colour = "#1A5276",
+    alpha  = 0.75,
+    shape  = 16
   ) +
-  geom_vline(
-    xintercept = median(site_counts$count),
-    linetype   = "dashed",
-    colour     = "firebrick",
-    linewidth  = 0.8
+  text_prov(colour = "gray40", size = 2.8) +
+  scale_size_area(
+    name     = "Weeks\nobserved",
+    max_size = 8,
+    breaks   = c(50, 100, 150, 200)
   ) +
-  annotate(
-    "text",
-    x      = median(site_counts$count) + 8,
-    y      = Inf,
-    label  = paste0("median = ", median(site_counts$count)),
-    vjust  = 1.5,
-    hjust  = 0,
-    colour = "firebrick",
-    size   = 3.5
-  ) +
-  scale_x_continuous(expand = expansion(mult = c(0, 0.02))) +
-  scale_y_continuous(expand = expansion(mult = c(0, 0.05))) +
+  crs_coord() +
   labs(
-    x     = "Weeks observed per site (all pathogens)",
-    y     = "Number of sites",
-    title = "How many observations does each site have?"
+    title   = "Canadian wastewater monitoring network for COVID-19",
+    caption = "Point size = number of weekly COVID-19 observations per site."
   ) +
-  theme_bw(base_size = 11) +
-  theme(panel.grid.minor = element_blank())
+  theme_map() +
+  theme(
+    legend.position  = c(0.93, 0.18),
+    legend.background = element_rect(fill = alpha("white", 0.7), colour = NA),
+    legend.title     = element_text(size = 9),
+    plot.title       = element_text(face = "bold", margin = margin(b = 4)),
+    plot.caption     = element_text(colour = "gray50", size = 8,
+                                    margin = margin(t = 4))
+  )
 ```
 
 
@@ -168,9 +220,10 @@ as a thin semi-transparent line, with the national average overlaid in
 bold.  Vertical dashed lines mark approximate Omicron wave peaks for
 reference.
 
-```{r plot-all-sites, fig.height = 4.5, fig.cap = "Weekly SARS-CoV-2 wastewater signal at all Canadian monitoring sites (covN2). Each gray line is one site; the national aggregate (bold blue) reflects the country-wide trajectory."}
+```{r plot-all-sites, fig.height = 4.5, fig.cap = "Weekly SARS-CoV-2 wastewater signal at all Canadian monitoring sites (COVID). Each gray line is one site; the national aggregate (bold blue) reflects the country-wide trajectory."}
 
 national <- ww %>%
+  filter(measureid == "covN2") %>%
   group_by(weekstart) %>%
   summarize(w_avg = mean(w_avg)) %>%
   mutate(province = "National")
@@ -215,6 +268,8 @@ Dashed red: approximate Omicron BA.1 / BA.2 / BA.4-5 wave peaks (source: https:/
     panel.grid.minor = element_blank()
   )
 ```
+
+Covid was detected in `r round(100 * mean(cov$w_avg > 0), 1)`% of weeks.
 
 ### Trends by province
 
@@ -271,3 +326,19 @@ single signal, the `multichangepoints` framework tests each site
 sequentially and combines the evidence in a principled way, allowing the
 detector to remain powerful even when only a subset of sites shows an
 elevated signal.
+
+
+# Change-point detection for WBE
+
+```{r}
+# checking data transformations that lead to independent and bounded innovations
+cov_alberton <- cov %>% 
+  select(site, weekstart, w_avg) %>%
+  filter(site == "Alberton") %>% 
+  arrange(weekstart) %>%
+  mutate(lag_w_avg = lag(w_avg)) %>%
+  mutate(log_change = log1p(w_avg) - log1p(lag_w_avg))
+```
+
+
+
