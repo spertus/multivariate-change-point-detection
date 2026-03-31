@@ -328,13 +328,42 @@ detector to remain powerful even when only a subset of sites shows an
 elevated signal.
 
 
+### Missing Data
+
+Some sites are missing weeks, wherein COVID-19 measurements were not taken.
+
+```{r missing data}
+missing_by_site <- cov %>%
+  group_by(site) %>%
+  summarize(
+    first_week = min(weekstart),
+    last_week  = max(weekstart),
+    observed   = list(sort(unique(weekstart))),
+    .groups    = "drop"
+  ) %>%
+  rowwise() %>%
+  mutate(
+    expected           = list(seq(first_week, last_week, by = "7 days")),
+    n_expected_observed = length(expected),
+    n_missing          = sum(!expected %in% observed),
+    pct_missing        = round(100 * n_missing / n_expected_observed, 1)
+  ) %>%
+  ungroup() %>%
+  select(site, n_expected_observed, n_missing, pct_missing) %>%
+  arrange(desc(pct_missing))
+
+head(missing_by_site, 10)
+
+summary(missing_by_site$pct_missing)
+```
+
+
 # Change-point detection for WBE
 
-```{r}
+```{r remove trend for weekly data}
 # checking data transformations that lead to independent and bounded innovations
-cov_alberton <- cov %>% 
-  select(site, weekstart, w_avg) %>%
-  filter(site == "Alberton") %>% 
+cov_change <- national %>% 
+  select(province, weekstart, w_avg) %>%
   arrange(weekstart) %>%
   mutate(lag_w_avg = lag(w_avg)) %>%
   mutate(log_change = log1p(w_avg) - log1p(lag_w_avg))
