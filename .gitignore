@@ -11,8 +11,6 @@
 *.tar.gz
 *.Rcheck/
 
-# knitr/rmarkdown outputs
-*.html
 
 # misc editor/temp files
 *.swp
