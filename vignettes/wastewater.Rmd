@@ -68,9 +68,9 @@ guarantees the desired error control.
 ## Data
 
 The dataset `wastewater_aggregate.csv` is published by the Public Health
-Agency of Canada, and aggregating weekly wastewater measurements from
+Agency of Canada (PHAC), aggregating weekly wastewater measurements from
 monitoring sites across Canada.  
-Each row contains one observation indexed by `site` $\times$ `week` $\times$ `pathogen`.  Key columns:
+Each row contains one observation indexed by `site` by `week` by `pathogen`.  Key columns:
 
 | Column | Description |
 |---|---|
@@ -365,14 +365,15 @@ summary(missing_by_site$pct_missing)
 
 # Change-point detection for WBE
 
-Change-point detection with WBE data is a major challenge because it is very difficult to identify the 'state of control' that is supposed to be captured by the pre-change model. 
-The state of control ought to be specified as a simple or composite model based on epidemic-free data. 
+Change-point detection with WBE data is a major challenge because it is very difficult to identify the _state of control_ that is supposed to be represented by the pre-change model. 
+In this case, the state of control is a site-specific simple or composite model from which the observed sequence is generated when there is no epidemic.
 Since we have multiple sites, we might try to make some kind of 'synthetic state of control' by synthesizing data across sites that were epidemic-free at various times. 
-Unfortunately, this is subject to the uncertainties inherent in wastewater surveillance across multiple sites [Joung et al (2023)](https://pmc.ncbi.nlm.nih.gov/articles/PMC10890812/pdf/CCDR-49-166.pdf), including:
+Unfortunately, this is subject to the many uncertainties inherent in wastewater surveillance across multiple sites [Joung et al (2023)](https://pmc.ncbi.nlm.nih.gov/articles/PMC10890812/pdf/CCDR-49-166.pdf), including:
 
+- **Target quantity**: The true target quantity of interest is the average viral load in a particular population week over week. This quantity varies naturally over time when the virus is in an endemic state. While this variation is not genuinely random, it can be modeled as such. For instance, we might assume it maintains some low-level average with as-if-Gaussian fluctuations from week to week, in which case the sequence is _stationary_ in the endemic phase.
 - **Sampling**: The methods of sample collection, shipping, and storage (compositing vs grab sampling, location, timing, shipping temperature, distance to lab, missing data), which may vary across sites and time.
 - **Analysis**: Laboratory analysis variability (de-gritting subsampling, homogenization, instrument error, human error).
-- **Structural**: The location and engineering of sewage systems and wastewater treatment plants (catchment area size and population, combined or separate ('sanitary') collection of runoff and wastewater).
+- **Infrastructure**: The location and engineering of sewage systems and wastewater treatment plants (catchment area size and population, combined or separate ('sanitary') collection of runoff and wastewater).
 - **Weather**: Weather conditions (rainwater or snowmelt contributing to influent, temperature, pH), which vary across sites and seasons, with some degree of stochasticity. 
 
 In the literature, these uncertainties are dealt with under the rubric of _normalization_, which is an active and un-clarified area of research. 
@@ -389,6 +390,10 @@ Another way is to fit models for the state of control.
 This is attempted below. 
 In either case, establishing a meaningful state of control (a simple or composite pre-change model) should be done separately from running a change-point algorithm, which can detect deviations but cannot define the state of control without a user. 
 
+
+## Example model and CPD
+
+This section is a placeholder.
 
 
 ```{r remove trend and model as AR(1)}
@@ -425,8 +430,61 @@ model <- GaussianModel(
   sd_post = sigma_hat,
   method = "predictable"
 )
-increments <- compute_increments(TSM(model), x, log = TRUE)
+inc <- compute_increments(TSM(model), x, log = TRUE)
+sr <- ShiryaevRobertsDetector(
+  alpha = 1/52, # average run length without false alarm is 1 year
+  criterion = "ARL"
+)
+det_out <- run_detector(sr, inc, log = TRUE)
+```
+
+```{r plot detector}
+par(mfrow = c(2, 2))
+plot(site_series$w_avg, x = site_series$weekstart, type = 'l', lwd = 2, col = 'darkorange3', main = "Original Vancouver COVID WBE Data")
+plot(x, type = 'l', x = site_series$weekstart, lwd = 2, col = 'forestgreen', main = "Transformed Data (log-change)")
+
+
+z <- increments_to_tsm(inc, log = TRUE)
+plot(z, type = "l", lwd = 2, col = "steelblue",
+     main = "log-TSM sequence", xlab = "Week", x = site_series$weekstart, ylab = "TSM")
+
+plot(det_out$statistic, type = "l", lwd = 2, col = "firebrick",
+     main = "log-S-R statistic (ARL = 20)", xlab = "Week", x = site_series$weekstart, ylab = "R_t")
+abline(h = log(sr@threshold), lty = 3, col = "gray50")
+if (det_out$alarm) {
+  abline(v = site_series$weekstart[det_out$stopping_time], lwd = 2, col = "darkgreen")
+}
+par(mfrow = c(1,1))
+```
+
+## Joint wastewater site monitoring
+
+To pass the wastewater data through the CPD algorithm, we need the site data as a matrix with `NA` where there are missing values. 
+
+```{r define joint matrix}
+# Full weekly spine: every 7 days from global min to global max
+all_weeks <- seq(min(cov$weekstart), max(cov$weekstart), by = "7 days")
+
+joint_matrix <- cov %>%
+  mutate(log_change = log1p(w_avg) - log1p(lag(w_avg))) %>%
+  select(site, weekstart, log_change) %>%
+  complete(site, weekstart = all_weeks) %>%   # pad all site × week combinations with NA
+  arrange(site, weekstart) %>%
+  pivot_wider(names_from = weekstart, values_from = log_change) %>%
+  column_to_rownames("site") %>%
+  as.matrix()
+
+cat("Dimensions: ", nrow(joint_matrix), "sites x", ncol(joint_matrix), "weeks\n")
+cat("Proportion NA: ", round(mean(is.na(joint_matrix)), 3), "\n")
+# white spaces are missing values
+image(t(joint_matrix), ylab = "Sites", xlab = "Weeks", xaxt = "n", yaxt = "n") 
 ```
 
 
+Next steps: 
+
+- Handle gaps (missing data)
+- Allow repeat alarms (via resets)
+- Multiple testing error control (FWER, FDR)
+- Define appropriate state of control (pre-change model) on holdout. This is basically a causal inference problem: imagine a _potential sequence_ with no epidemic and a potential sequence with epidemic for each site. We observe an _interleaving_  (almost like a cross-over design) of these sequences, with measurement error, and wish to identify when we switch between these states with little delay and with continuous monitoring. 
 
