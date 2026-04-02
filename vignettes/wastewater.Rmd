@@ -68,9 +68,9 @@ guarantees the desired error control.
 ## Data
 
 The dataset `wastewater_aggregate.csv` is published by the Public Health
-Agency of Canada, and aggregating weekly wastewater measurements from
+Agency of Canada (PHAC), aggregating weekly wastewater measurements from
 monitoring sites across Canada.  
-Each row contains one observation indexed by `site` $\times$ `week` $\times$ `pathogen`.  Key columns:
+Each row contains one observation indexed by `site` by `week` by `pathogen`.  Key columns:
 
 | Column | Description |
 |---|---|
@@ -457,12 +457,34 @@ if (det_out$alarm) {
 par(mfrow = c(1,1))
 ```
 
-Next steps:
+## Joint wastewater site monitoring
 
-- Handle separate start times 
+To pass the wastewater data through the CPD algorithm, we need the site data as a matrix with `NA` where there are missing values. 
+
+```{r define joint matrix}
+# Full weekly spine: every 7 days from global min to global max
+all_weeks <- seq(min(cov$weekstart), max(cov$weekstart), by = "7 days")
+
+joint_matrix <- cov %>%
+  mutate(log_change = log1p(w_avg) - log1p(lag(w_avg))) %>%
+  select(site, weekstart, log_change) %>%
+  complete(site, weekstart = all_weeks) %>%   # pad all site × week combinations with NA
+  arrange(site, weekstart) %>%
+  pivot_wider(names_from = weekstart, values_from = log_change) %>%
+  column_to_rownames("site") %>%
+  as.matrix()
+
+cat("Dimensions: ", nrow(joint_matrix), "sites x", ncol(joint_matrix), "weeks\n")
+cat("Proportion NA: ", round(mean(is.na(joint_matrix)), 3), "\n")
+# white spaces are missing values
+image(t(joint_matrix), ylab = "Sites", xlab = "Weeks", xaxt = "n", yaxt = "n") 
+```
+
+
+Next steps: 
+
 - Handle gaps (missing data)
-- Define appropriate state of control (pre-change model) on holdout. This is basically a causal inference problem: imagine a _potential sequence_ with no epidemic and a potential sequence with epidemic for each site. We observe an _interleaving_  (almost like a cross-over design) of these sequences, with measurement error, and wish to identify when we switch between these states with little delay and with continuous monitoring. 
 - Allow repeat alarms (via resets)
 - Multiple testing error control (FWER, FDR)
-
+- Define appropriate state of control (pre-change model) on holdout. This is basically a causal inference problem: imagine a _potential sequence_ with no epidemic and a potential sequence with epidemic for each site. We observe an _interleaving_  (almost like a cross-over design) of these sequences, with measurement error, and wish to identify when we switch between these states with little delay and with continuous monitoring. 
 
