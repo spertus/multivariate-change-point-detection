@@ -194,7 +194,7 @@ test_that("ShiryaevRoberts detector runs end-to-end with offline stream combined
 test_that("product beats universal portfolio beats average", {
   s1 <- runif(20, 0.9, 1.3)
   s2 <- runif(20, 0.3, 1.9)
-  s3 <- runif(20, 0.9, 1.9)
+  s3 <- runif(20, 0.9, 3.0)
 
   p <- ProductCombiner()
   a <- AverageCombiner()

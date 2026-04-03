@@ -8,7 +8,8 @@
 #   name      = character label
 setClass(
   "Detector",
-  slots = c(alpha = "numeric", criterion = "character", threshold = "numeric", spending = "numeric", name = "character")
+  slots = c(alpha = "numeric", criterion = "character", threshold = "numeric",
+            spending = "numeric", name = "character", multiple_alarms = "logical")
 )
 
 # Class: ShiryaevRobertsDetector
@@ -36,6 +37,7 @@ ShiryaevRobertsDetector <- function(alpha = 0.05,
                                     threshold = NULL,
                                     geometric_p = 0.01,
                                     spending_length = 1000,
+                                    multiple_alarms = FALSE,
                                     name = "shiryaev-roberts") {
   criterion <- match.arg(criterion)
   if (is.null(threshold)) {
@@ -62,6 +64,7 @@ ShiryaevRobertsDetector <- function(alpha = 0.05,
       criterion = criterion,
       threshold = threshold,
       spending = spending,
+      multiple_alarms = multiple_alarms,
       name = name)
 }
 
@@ -76,6 +79,7 @@ ShiryaevRobertsDetector <- function(alpha = 0.05,
 CUSUMDetector <- function(alpha = 0.05,
                           criterion = c("ARL", "PFA"),
                           threshold = NULL,
+                          multiple_alarms = FALSE,
                           name = "cusum") {
   criterion <- match.arg(criterion)
   if (is.null(threshold)) {
@@ -86,6 +90,7 @@ CUSUMDetector <- function(alpha = 0.05,
       criterion = criterion,
       threshold = threshold,
       spending = numeric(0),
+      multiple_alarms = multiple_alarms,
       name = name)
 }
 
@@ -165,19 +170,36 @@ setMethod("update_detector", "CUSUMDetector", function(object, evidence, t, stat
 setMethod("run_detector", "Detector", function(object, evidence, log = FALSE) {
   if(!log && any(evidence < 0)){stop("evidence is negative but log is false!")}
   .assert_numeric_vector(evidence, "evidence")
-  n <- length(evidence)
-  stat <- numeric(n)
-  state <- if (log && is(object, "ShiryaevRobertsDetector")) -Inf else 0
-  stop_time <- Inf
+  n          <- length(evidence)
+  stat       <- numeric(n)
+  state0     <- if (log && is(object, "ShiryaevRobertsDetector")) -Inf else 0
+  state      <- state0
+  alarm_times <- integer(0)
+  spend_idx  <- 0L   # local spending offset; advances after each reset
 
   for (t in seq_len(n)) {
-    step <- update_detector(object, evidence = evidence[t], t = t, state = state, log = log)
-    state <- step$state
+    # For PFA with multiple alarms: translate global t to recycled spending index.
+    t_local <- if (object@criterion == "PFA") t - spend_idx else t
+    step    <- update_detector(object, evidence = evidence[t], t = t_local, state = state, log = log)
+    state   <- step$state
     stat[t] <- step$statistic
-    if (isTRUE(step$alarm) && !is.finite(stop_time)) {
-      stop_time <- t
+
+    if (isTRUE(step$alarm)) {
+      alarm_times <- c(alarm_times, t)
+      if (object@multiple_alarms) {
+        state     <- state0          # reset to initial value
+        spend_idx <- t               # recycle spending from t+1 onward
+      }
     }
   }
 
-  list(statistic = stat, stopping_time = stop_time, alarm = is.finite(stop_time), criterion = object@criterion, log = log)
+  stop_time <- if (length(alarm_times) > 0L) alarm_times[1L] else Inf
+  list(
+    statistic     = stat,
+    stopping_time = stop_time,
+    alarm_times   = alarm_times,
+    alarm         = length(alarm_times) > 0L,
+    criterion     = object@criterion,
+    log           = log
+  )
 })
