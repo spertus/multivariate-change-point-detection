@@ -433,8 +433,7 @@ model <- GaussianModel(
 inc <- compute_increments(TSM(model), x, log = TRUE)
 sr <- ShiryaevRobertsDetector(
   alpha = 1/52, # average run length without false alarm is 1 year
-  criterion = "ARL"
-)
+  criterion = "ARL")
 det_out <- run_detector(sr, inc, log = TRUE)
 ```
 
