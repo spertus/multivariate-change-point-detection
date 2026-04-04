@@ -185,7 +185,9 @@ setMethod("run_detector", "Detector", function(object, evidence, log = FALSE) {
     stat[t] <- step$statistic
 
     if (isTRUE(step$alarm)) {
-      alarm_times <- c(alarm_times, t)
+      if (object@multiple_alarms || length(alarm_times) == 0L) {
+        alarm_times <- c(alarm_times, t)
+      }
       if (object@multiple_alarms) {
         state     <- state0          # reset to initial value
         spend_idx <- t               # recycle spending from t+1 onward
