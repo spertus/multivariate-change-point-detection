@@ -40,18 +40,22 @@ setMethod("compute_increments", "TSM", function(object, x, log = FALSE) {
     .assert_numeric_vector(as.numeric(x), "x")
     x <- as.numeric(x)
 
-    # Fast path: univariate Gaussian mixture post-change.
-    if (is(object@model, "GaussianModel") &&
+    has_na <- anyNA(x)
+
+    # Fast path: univariate Gaussian mixture post-change (only when no NAs).
+    if (!has_na &&
+        is(object@model, "GaussianModel") &&
         .is_interval_spec(object@model@mean_post) &&
         object@model@method == "mixture") {
       return(.gaussian_mix_increments_fast(object@model, x, log = log))
     }
 
     n <- length(x)
-    out <- numeric(n)
+    out <- rep(NA_real_, n)
     history <- numeric(0)
 
     for (t in seq_len(n)) {
+      if (is.na(x[t])) next          # offline: out[t] stays NA; history unchanged
       out[t] <- likelihood_increment(object@model, x = x[t], history = history, log = log)
       history <- c(history, x[t])
     }

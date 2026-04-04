@@ -61,10 +61,11 @@ setMethod("combine_streams", "ProductCombiner", function(object, streams, weight
   if (!is.matrix(streams) || !is.numeric(streams)) {
     stop("`streams` must be a numeric matrix of marginal increment sequences.", call. = FALSE)
   }
+  # NA entries (offline streams) contribute 0 in log-space (factor 1), so omit them.
   if (log) {
-    return(rowSums(streams))
+    return(rowSums(streams, na.rm = TRUE))
   }
-  apply(streams, 1, prod)
+  apply(streams, 1, function(row) prod(row[!is.na(row)]))
 })
 
 # Method: combine_streams for AverageCombiner
@@ -88,14 +89,31 @@ setMethod("combine_streams", "AverageCombiner", function(object, streams, weight
   }
   w <- weights / sum(weights)
 
-  if (!log) {
-    return(as.vector(streams %*% w))
+  # Fast path: no NAs — use vectorised operations.
+  if (!anyNA(streams)) {
+    if (!log) {
+      return(as.vector(streams %*% w))
+    }
+    log_w <- ifelse(w > 0, log(w), -Inf)
+    out <- numeric(nrow(streams))
+    for (t in seq_len(nrow(streams))) {
+      out[t] <- .logsumexp(log_w + streams[t, ])
+    }
+    return(out)
   }
 
-  log_w <- ifelse(w > 0, log(w), -Inf)
+  # NA-aware path: at each t, renormalise weights over online (non-NA) streams
+  # so that offline streams do not dilute the average.
   out <- numeric(nrow(streams))
   for (t in seq_len(nrow(streams))) {
-    out[t] <- .logsumexp(log_w + streams[t, ])
+    online <- !is.na(streams[t, ])
+    w_t    <- w[online] / sum(w[online])
+    if (!log) {
+      out[t] <- sum(streams[t, online] * w_t)
+    } else {
+      log_w_t <- ifelse(w_t > 0, log(w_t), -Inf)
+      out[t]  <- .logsumexp(log_w_t + streams[t, online])
+    }
   }
   out
 })
@@ -135,7 +153,11 @@ setMethod("combine_streams", "UniversalPortfolioCombiner", function(object, stre
     combined_inc <- numeric(n)
 
     for (t in seq_len(n)) {
-      gross <- pmax(as.vector(grid %*% streams[t, ]), .Machine$double.eps)
+      # Offline streams (NA) contribute factor 1; substitute 0 in natural-scale means 1 only
+      # in log-space, so substitute 1 directly here.
+      row_t <- streams[t, ]
+      row_t[is.na(row_t)] <- 1
+      gross <- pmax(as.vector(grid %*% row_t), .Machine$double.eps)
       combined_inc[t] <- sum(wealth * gross) / sum(wealth)
       wealth <- wealth * gross
     }
@@ -148,9 +170,12 @@ setMethod("combine_streams", "UniversalPortfolioCombiner", function(object, stre
   combined_log_inc <- numeric(n)
 
   for (t in seq_len(n)) {
+    # Offline streams (NA) contribute 0 in log-space (factor 1); substitute before arithmetic.
+    row_t <- streams[t, ]
+    row_t[is.na(row_t)] <- 0
     log_gross <- numeric(m)
     for (i in seq_len(m)) {
-      log_gross[i] <- .logsumexp(log_grid[i, ] + streams[t, ])
+      log_gross[i] <- .logsumexp(log_grid[i, ] + row_t)
     }
     combined_log_inc[t] <- .logsumexp(log_wealth + log_gross) - .logsumexp(log_wealth)
     log_wealth <- log_wealth + log_gross

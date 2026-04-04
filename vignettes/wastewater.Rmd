@@ -433,8 +433,7 @@ model <- GaussianModel(
 inc <- compute_increments(TSM(model), x, log = TRUE)
 sr <- ShiryaevRobertsDetector(
   alpha = 1/52, # average run length without false alarm is 1 year
-  criterion = "ARL"
-)
+  criterion = "ARL")
 det_out <- run_detector(sr, inc, log = TRUE)
 ```
 
@@ -460,6 +459,7 @@ par(mfrow = c(1,1))
 ## Joint wastewater site monitoring
 
 To pass the wastewater data through the CPD algorithm, we need the site data as a matrix with `NA` where there are missing values. 
+The `multichangepoints` software is designed to accommodate leading NAs for sites that come online late. 
 
 ```{r define joint matrix}
 # Full weekly spine: every 7 days from global min to global max

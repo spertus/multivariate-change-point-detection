@@ -1,7 +1,8 @@
 test_that(".assert_numeric_vector accepts valid vectors and rejects invalid inputs", {
   expect_no_error(multichangepoints:::.assert_numeric_vector(c(1, 2, 3), "x"))
   expect_error(multichangepoints:::.assert_numeric_vector(numeric(0), "x"))
-  expect_error(multichangepoints:::.assert_numeric_vector(c(1, NA_real_), "x"))
+  expect_no_error(multichangepoints:::.assert_numeric_vector(c(1, NA_real_), "x"))   # NAs allowed (offline streams)
+  expect_error(multichangepoints:::.assert_numeric_vector(c(1, Inf), "x"))            # non-finite non-NA still rejected
   expect_error(multichangepoints:::.assert_numeric_vector("abc", "x"))
 })
 

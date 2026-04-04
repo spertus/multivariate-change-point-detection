@@ -6,7 +6,7 @@
 # outputs:
 #   NULL (invisibly) on success; throws error on invalid input
 .assert_numeric_vector <- function(x, name) {
-  if (!is.numeric(x) || length(x) < 1L || any(!is.finite(x))) {
+  if (!is.numeric(x) || length(x) < 1L || any(!is.finite(x[!is.na(x)]))) {
     stop(sprintf("`%s` must be a non-empty finite numeric vector.", name), call. = FALSE)
   }
 }
