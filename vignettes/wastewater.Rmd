@@ -25,6 +25,7 @@ library(knitr) # for rendering vignette + tables
 library(canadianmaps) # for mapping canadian cities
 library(sf) # for spatial vector data (mapping)
 library(maps) # for database of world cities
+library(naniar) # for missing data visualization
 
 #multichangepoints from Github
 devtools::load_all("~/Dropbox/CANSSI/multi-change-points/")
@@ -132,10 +133,10 @@ Sites vary in their number of observations primarily because monitoring started 
 
 # ---- observation counts per site -------------------------------------------
 site_counts <- ww %>%
-  filter(site != "", measureid == "covN2") %>%
+  filter(site != "", measureid %in% c("covN2")) %>%
   group_by(site, city, province) %>%
   summarize(count = n()) %>%
-  mutate(city_clean = trimws(city))
+  mutate(city_clean = trimws(city)) 
 
 # ---- geocode: auto-match city names from maps::world.cities ----------------
 ca_cities <- world.cities[world.cities$country.etc == "Canada", ]
@@ -355,12 +356,106 @@ missing_by_site <- cov %>%
   ) %>%
   ungroup() %>%
   select(site, n_expected_observed, n_missing, pct_missing) %>%
-  arrange(desc(pct_missing))
+  arrange(desc(n_expected_observed), pct_missing)
 
+# these are the most 'complete' sites, with the longest observations and the fewest missing
 head(missing_by_site, 10)
-
-summary(missing_by_site$pct_missing)
 ```
+
+To demonstrate change-point detection on this data, we will perform such initial data filtering and transformation. For filtering we:
+- Select the highest-quality sites based on observable data: those that were enrolled early and contained few missing weeks
+- Remove early measurements: monitoring began in 2020, but the signals are very volatile and not all sites we selected were online by then. For instance, laboratory protocols changed in February 2021 to sample the solid rather than liquid portion of a sample.
+- Remove low outliers: a very few observations (~0.1%) are zero or nearly zero. They are problematic on the log-scale and represent substantial negative deviations from the background rates observed around them. We set these to `NA` and linearly interpolate them when we fill in other 'natural' missing values. 
+
+```{r site selection}
+selected_sites <- c(
+  "Montreal North", 
+  "Montreal South",
+  "Vancouver Lions Gate",
+  "Vancouver Annacis Island",
+  "Winnipeg West End",
+  "Winnipeg North End",
+  "Toronto Humber",
+  "Toronto Ashbridges Bay",
+  "Toronto North Toronto",
+  "Halifax Halifax",
+  "Saskatoon",
+  "St John's",
+  "Edmonton Goldbar",
+  "Regina",
+  "Moncton"
+  )
+
+cov <- cov %>% 
+  filter(site %in% selected_sites) %>% # restrict to handful of sites
+  filter(weekstart > as.Date('2021-06-01')) %>% # remove early measurements
+  mutate(w_avg = ifelse(w_avg > .01, w_avg, NA)) # set low outliers (0.1% of values) to missing 
+```
+
+
+```{r plot selected sites}
+ggplot(cov, aes(x = weekstart, y = w_avg,
+                     colour = site, group = site)) +
+  geom_line(linewidth = 0.55, alpha = 0.8) +
+  facet_wrap(~ site, ncol = 3, scales = "free_y") +
+  scale_x_date(date_breaks = "1 year", date_labels = "%Y") +
+  scale_y_continuous(
+    labels = scales::label_comma(),
+    expand = expansion(mult = c(0, 0.05))
+  ) +
+  scale_colour_viridis_d(option = "turbo", guide = "none") +
+  labs(
+    x     = NULL,
+    y     = "Weekly average signal (copies / mL)",
+    title = "SARS-CoV-2 wastewater signal by site",
+    subtitle = "Each line = one monitoring site  |  y-axis free within panel"
+  ) +
+  theme_bw(base_size = 10) +
+  theme(
+    axis.text.x      = element_text(angle = 30, hjust = 1, size = 8),
+    strip.background = element_rect(fill = "#D6EAF8"),
+    strip.text       = element_text(face = "bold", size = 9),
+    panel.grid.minor = element_blank()
+  )
+```
+
+```{r define joint matrix}
+# Full weekly spine: every 7 days from global min to global max
+all_weeks <- seq(min(cov$weekstart), max(cov$weekstart), by = "7 days")
+
+joint_matrix <- cov %>%
+  mutate(log_change = log1p(w_avg) - log1p(lag(w_avg))) %>%
+  select(site, weekstart, log_change) %>%
+  complete(site, weekstart = all_weeks) %>%   # pad all site × week combinations with NA
+  arrange(site, weekstart) %>%
+  pivot_wider(names_from = weekstart, values_from = log_change) %>%
+  column_to_rownames("site") %>%
+  as.matrix()
+
+vis_miss(as.data.frame(joint_matrix))
+```
+
+
+```{r impute missing}
+# For each site (row), linearly interpolate only between the first and last
+# observed (non-NA) value. NAs outside that window remain NA (site offline).
+impute_row <- function(row) {
+  obs <- which(!is.na(row))
+  if (length(obs) < 2L) return(row)   # 0 or 1 observation: nothing to interpolate
+  first <- obs[1L]; last <- obs[length(obs)]
+  row[first:last] <- approx(obs, row[obs], xout = first:last)$y
+  row
+}
+
+joint_matrix_complete <- t(apply(joint_matrix, 1, impute_row))
+
+cat("NAs before imputation:", sum(is.na(joint_matrix)), "\n")
+cat("NAs after imputation: ", sum(is.na(joint_matrix_complete)), "\n")
+cat("(Remaining NAs are leading/trailing offline periods.)\n")
+
+vis_miss(as.data.frame(joint_matrix_complete))
+```
+
 
 
 # Change-point detection for WBE
@@ -371,7 +466,7 @@ Since we have multiple sites, we might try to make some kind of 'synthetic state
 Unfortunately, this is subject to the many uncertainties inherent in wastewater surveillance across multiple sites [Joung et al (2023)](https://pmc.ncbi.nlm.nih.gov/articles/PMC10890812/pdf/CCDR-49-166.pdf), including:
 
 - **Target quantity**: The true target quantity of interest is the average viral load in a particular population week over week. This quantity varies naturally over time when the virus is in an endemic state. While this variation is not genuinely random, it can be modeled as such. For instance, we might assume it maintains some low-level average with as-if-Gaussian fluctuations from week to week, in which case the sequence is _stationary_ in the endemic phase.
-- **Sampling**: The methods of sample collection, shipping, and storage (compositing vs grab sampling, location, timing, shipping temperature, distance to lab, missing data), which may vary across sites and time.
+- **Sampling**: The methods of sample collection, shipping, and storage (compositing vs grab sampling, location, timing, shipping temperature, distance to lab, missing data), which may vary across sites and time. The sites that were selected for our purposes primarily used composite sampling.
 - **Analysis**: Laboratory analysis variability (de-gritting subsampling, homogenization, instrument error, human error).
 - **Infrastructure**: The location and engineering of sewage systems and wastewater treatment plants (catchment area size and population, combined or separate ('sanitary') collection of runoff and wastewater).
 - **Weather**: Weather conditions (rainwater or snowmelt contributing to influent, temperature, pH), which vary across sites and seasons, with some degree of stochasticity. 
@@ -394,7 +489,6 @@ In either case, establishing a meaningful state of control (a simple or composit
 ## Example model and CPD
 
 This section is a placeholder.
-
 
 ```{r remove trend and model as AR(1)}
 # 1. start with a single site with no missing data (Vancouver)
@@ -461,47 +555,7 @@ par(mfrow = c(1,1))
 To pass the wastewater data through the CPD algorithm, we need the site data as a matrix with `NA` where there are missing values. 
 The `multichangepoints` software is designed to accommodate leading NAs for sites that come online late. 
 
-```{r define joint matrix}
-# Full weekly spine: every 7 days from global min to global max
-all_weeks <- seq(min(cov$weekstart), max(cov$weekstart), by = "7 days")
 
-joint_matrix <- cov %>%
-  mutate(log_change = log1p(w_avg) - log1p(lag(w_avg))) %>%
-  select(site, weekstart, log_change) %>%
-  complete(site, weekstart = all_weeks) %>%   # pad all site × week combinations with NA
-  arrange(site, weekstart) %>%
-  pivot_wider(names_from = weekstart, values_from = log_change) %>%
-  column_to_rownames("site") %>%
-  as.matrix()
-
-cat("Dimensions: ", nrow(joint_matrix), "sites x", ncol(joint_matrix), "weeks\n")
-cat("Proportion NA: ", round(mean(is.na(joint_matrix)), 3), "\n")
-# white spaces are missing values
-image(t(joint_matrix), ylab = "Sites", xlab = "Weeks", xaxt = "n", yaxt = "n") 
-```
-
-
-### Impute missing data
-
-```{r impute missing}
-# For each site (row), linearly interpolate only between the first and last
-# observed (non-NA) value. NAs outside that window remain NA (site offline).
-impute_row <- function(row) {
-  obs <- which(!is.na(row))
-  if (length(obs) < 2L) return(row)   # 0 or 1 observation: nothing to interpolate
-  first <- obs[1L]; last <- obs[length(obs)]
-  row[first:last] <- approx(obs, row[obs], xout = first:last)$y
-  row
-}
-
-joint_matrix_complete <- t(apply(joint_matrix, 1, impute_row))
-
-cat("NAs before imputation:", sum(is.na(joint_matrix)), "\n")
-cat("NAs after imputation: ", sum(is.na(joint_matrix_complete)), "\n")
-cat("(Remaining NAs are leading/trailing offline periods.)\n")
-# white spaces are missing values
-image(t(joint_matrix_complete), ylab = "Sites", xlab = "Weeks", xaxt = "n", yaxt = "n") 
-```
 
 ## State of control
 
