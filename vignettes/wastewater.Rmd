@@ -302,7 +302,7 @@ ggplot(cov_prov, aes(x = weekstart, y = w_avg,
   geom_line(linewidth = 0.55, alpha = 0.8) +
   facet_wrap(~ province, ncol = 3, scales = "free_y") +
   scale_x_date(date_breaks = "1 year", date_labels = "%Y") +
-  scale_y_continuous(
+  scale_y_log10(
     labels = scales::label_comma(),
     expand = expansion(mult = c(0, 0.05))
   ) +
@@ -481,10 +481,45 @@ image(t(joint_matrix), ylab = "Sites", xlab = "Weeks", xaxt = "n", yaxt = "n")
 ```
 
 
+### Impute missing data
+
+```{r impute missing}
+# For each site (row), linearly interpolate only between the first and last
+# observed (non-NA) value. NAs outside that window remain NA (site offline).
+impute_row <- function(row) {
+  obs <- which(!is.na(row))
+  if (length(obs) < 2L) return(row)   # 0 or 1 observation: nothing to interpolate
+  first <- obs[1L]; last <- obs[length(obs)]
+  row[first:last] <- approx(obs, row[obs], xout = first:last)$y
+  row
+}
+
+joint_matrix_complete <- t(apply(joint_matrix, 1, impute_row))
+
+cat("NAs before imputation:", sum(is.na(joint_matrix)), "\n")
+cat("NAs after imputation: ", sum(is.na(joint_matrix_complete)), "\n")
+cat("(Remaining NAs are leading/trailing offline periods.)\n")
+# white spaces are missing values
+image(t(joint_matrix_complete), ylab = "Sites", xlab = "Weeks", xaxt = "n", yaxt = "n") 
+```
+
+## State of control
+
+The appropriate state of control is essentially a causal inference problem, we imagine a _potential sequence_ with no epidemic and a potential sequence with epidemic for each site. 
+We observe an _interleaving_ of these sequences, with measurement error, and wish to identify when we switch between these states with little delay and with continuous monitoring. 
+
+The details of the state of control differ site-by-site, because sources of uncertainty vary across sites. 
+We log-transform the data and estimate the state of control separately at each site from held-out sections where we know COVID-19 levels were low in the population.
+We then assume that these are representative, in the sense that the distributions modeling them are stationary.
+
+
+```{r defining parameters for state of control}
+#TODO
+```
+
+
 Next steps: 
 
-- Handle gaps (missing data)
-- Allow repeat alarms (via resets)
 - Multiple testing error control (FWER, FDR)
-- Define appropriate state of control (pre-change model) on holdout. This is basically a causal inference problem: imagine a _potential sequence_ with no epidemic and a potential sequence with epidemic for each site. We observe an _interleaving_  (almost like a cross-over design) of these sequences, with measurement error, and wish to identify when we switch between these states with little delay and with continuous monitoring. 
+
 
