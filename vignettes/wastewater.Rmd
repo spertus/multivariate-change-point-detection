@@ -25,6 +25,7 @@ library(knitr) # for rendering vignette + tables
 library(canadianmaps) # for mapping canadian cities
 library(sf) # for spatial vector data (mapping)
 library(maps) # for database of world cities
+library(naniar) # for missing data visualization
 
 #multichangepoints from Github
 devtools::load_all("~/Dropbox/CANSSI/multi-change-points/")
@@ -37,9 +38,7 @@ set.seed(20260305)
 Wastewater-based epidemiology (WBE) monitors the concentration of pathogen
 genetic material — such as SARS-CoV-2 RNA — in municipal wastewater.
 Because viral shedding into sewage can precede clinical case reporting by days
-to weeks, surveillance networks that continuously sample and sequence
-wastewater at multiple sites can provide an early-warning signal of emerging
-or resurging outbreaks, and identify which sites are effected in order to triage resources.
+to weeks [Peng et al (2025)](https://www.sciencedirect.com/science/article/pii/S1755436525000283), surveillance networks that continuously sample and sequence wastewater at multiple sites can provide early-warning signals of emerging or resurging outbreaks, and identify which sites are effected in order to triage resources.
 
 From a statistical perspective, a national WBE network yields a
 **multivariate data stream**: at each time point $t$ (here, each
@@ -78,7 +77,7 @@ Each row contains one observation indexed by `site` by `week` by `pathogen`.  Ke
 | `province` | Canadian province / territory |
 | `weekstart` | Monday of the epidemiological week |
 | `measureid` | Pathogen marker (`covN2`, `fluA`, `fluB`, `rsv`) |
-| `w_avg` | Weekly average viral signal (copies / mL, log10-transformed at source) |
+| `covN2` | Weekly average viral signal (copies / mL, log10-transformed at source) |
 
 ```{r load-data}
 #NB: data dictionary says empty sites indicate aggregates, but there are no empty sites
@@ -110,10 +109,13 @@ There are `length(unique(ww$site))` sites in total, with varying numbers of obse
 We filter to the SARS-CoV-2 N2 gene target and remove the national-aggregate
 rows (blank site name), retaining only site-level observations.
 
-```{r filter-covid}
+```{r filter to covid but include ratio with rsv}
 cov <- ww %>%
-  filter(measureid == "covN2", site != "") %>%
-  mutate(province = if_else(province == "", NA_character_, province))
+  select(Location, site, province, country, weekstart, measureid, w_avg) %>%
+  filter(measureid %in% c("covN2", "rsv"), site != "") %>%
+  mutate(province = if_else(province == "", NA_character_, province)) %>%
+  pivot_wider(values_from = "w_avg", names_from = "measureid") %>%
+  mutate(covid_rsv_ratio = covN2/rsv)
 
 cat(
   "Sites:", n_distinct(cov$site), "\n",
@@ -132,10 +134,10 @@ Sites vary in their number of observations primarily because monitoring started 
 
 # ---- observation counts per site -------------------------------------------
 site_counts <- ww %>%
-  filter(site != "", measureid == "covN2") %>%
+  filter(site != "", measureid %in% c("covN2")) %>%
   group_by(site, city, province) %>%
   summarize(count = n()) %>%
-  mutate(city_clean = trimws(city))
+  mutate(city_clean = trimws(city)) 
 
 # ---- geocode: auto-match city names from maps::world.cities ----------------
 ca_cities <- world.cities[world.cities$country.etc == "Canada", ]
@@ -220,7 +222,7 @@ ggplot() +
 
 ### Trend overview — all sites
 
-The plot below shows weekly COVID signal (`w_avg`) at every monitoring site
+The plot below shows weekly COVID signal (`covN2`) at every monitoring site
 as a thin semi-transparent line, with the national average overlaid in
 bold.  Vertical dashed lines mark approximate Omicron wave peaks for
 reference.
@@ -230,20 +232,20 @@ reference.
 national <- ww %>%
   filter(measureid == "covN2") %>%
   group_by(weekstart) %>%
-  summarize(w_avg = mean(w_avg)) %>%
+  summarize(covN2 = mean(w_avg)) %>%
   mutate(province = "National")
 
 ggplot() +
   # Individual sites
   geom_line(
     data  = cov,
-    aes(x = weekstart, y = w_avg, group = site),
+    aes(x = weekstart, y = covN2, group = site),
     colour = "gray60", alpha = 0.35, linewidth = 0.35
   ) +
   # National aggregate
   geom_line(
     data      = national,
-    aes(x = weekstart, y = w_avg),
+    aes(x = weekstart, y = covN2),
     colour    = "#1A5276",
     linewidth = 1.1
   ) +
@@ -274,7 +276,7 @@ Dashed red: approximate Omicron BA.1 / BA.2 / BA.4-5 wave peaks (source: https:/
   )
 ```
 
-Covid was detected in `r round(100 * mean(cov$w_avg > 0), 1)`% of weeks.
+Covid was detected in `r round(100 * mean(cov$covN2 > 0), 1)`% of weeks.
 
 ### Trends by province
 
@@ -297,7 +299,7 @@ cov_prov <- cov %>%
   filter(!is.na(province)) %>%
   mutate(province = factor(province, levels = province_order))
 
-ggplot(cov_prov, aes(x = weekstart, y = w_avg,
+ggplot(cov_prov, aes(x = weekstart, y = covN2,
                      colour = site, group = site)) +
   geom_line(linewidth = 0.55, alpha = 0.8) +
   facet_wrap(~ province, ncol = 3, scales = "free_y") +
@@ -355,12 +357,132 @@ missing_by_site <- cov %>%
   ) %>%
   ungroup() %>%
   select(site, n_expected_observed, n_missing, pct_missing) %>%
-  arrange(desc(pct_missing))
+  arrange(desc(n_expected_observed), pct_missing)
 
+# these are the most 'complete' sites, with the longest observations and the fewest missing
 head(missing_by_site, 10)
-
-summary(missing_by_site$pct_missing)
 ```
+
+To demonstrate change-point detection on this data, we will perform such initial data filtering and transformation. For filtering we:
+- Select the highest-quality sites based on observable data: those that were enrolled early, contained few missing weeks, and had RSV measured.
+- Remove early measurements: monitoring began in 2020, but the signals are very volatile and not all sites we selected were online by then. For instance, laboratory protocols changed in February 2021 to sample the solid rather than liquid portion of a sample. RSV monitoring did not come online until January 2023. For now, we will start the streams from that date.
+- Remove low outliers: a very few observations (~0.1%) are zero or nearly zero. They are problematic on the log-scale and represent substantial negative deviations from the background rates observed around them. We set these to `NA` and linearly interpolate them when we fill in other 'natural' missing values. 
+
+```{r site selection}
+selected_sites <- c(
+  "Montreal North", 
+  "Montreal South",
+  "Vancouver Lions Gate",
+  "Vancouver Annacis Island",
+  "Winnipeg West End",
+  "Winnipeg North End",
+  "Toronto Humber",
+  "Toronto Ashbridges Bay",
+  "Toronto North Toronto",
+  "Halifax Halifax",
+  "St John's",
+  "Edmonton Goldbar",
+  "Regina"
+  )
+
+cov <- cov %>% 
+  filter(site %in% selected_sites) %>% # restrict to handful of sites
+  filter(weekstart > as.Date('2023-01-01')) %>% # remove early measurements
+  mutate(covN2 = ifelse(covN2 > .01, covN2, NA)) # set low outliers (0.1% of values) to missing
+```
+
+
+```{r plot selected sites}
+ggplot(cov, aes(x = weekstart, y = covN2,
+                     colour = site, group = site)) +
+  geom_line(linewidth = 0.55, alpha = 0.8) +
+  facet_wrap(~ site, ncol = 3, scales = "fixed") +
+  scale_x_date(date_breaks = "1 year", date_labels = "%Y") +
+  scale_y_log10(
+    labels = scales::label_comma(),
+    expand = expansion(mult = c(0, 0.05))
+  ) +
+  scale_colour_viridis_d(option = "turbo", guide = "none") +
+  labs(
+    x     = NULL,
+    y     = "Weekly average signal (copies / mL)",
+    title = "SARS-CoV-2 wastewater signal by site",
+    subtitle = "Each line = one monitoring site  |  y-axis free within panel"
+  ) +
+  theme_bw(base_size = 10) +
+  theme(
+    axis.text.x      = element_text(angle = 30, hjust = 1, size = 8),
+    strip.background = element_rect(fill = "#D6EAF8"),
+    strip.text       = element_text(face = "bold", size = 9),
+    panel.grid.minor = element_blank()
+  )
+```
+We can also collapse across years and plot the signals by Epi-week, again on a Log-10 scale. 
+This perspective reveals the seasonality in the timeseries: the concentrations are lower in the summer and higher in the winter.
+
+```{r wastewater signal by site-epiweek}
+ggplot(cov, aes(x = lubridate::epiweek(weekstart), y = covN2,
+                     colour = site, group = site)) +
+  geom_point(alpha = 0.8) +
+  facet_wrap(~ site, ncol = 3, scales = "fixed") +
+  scale_y_log10(
+    labels = scales::label_comma(),
+    expand = expansion(mult = c(0, 0.05))
+  ) +
+  scale_colour_viridis_d(option = "turbo", guide = "none") +
+  labs(
+    x     = NULL,
+    y     = "Weekly average signal (copies / mL)",
+    title = "SARS-CoV-2 wastewater signal by site",
+    subtitle = "Each line = one monitoring site  |  y-axis free within panel"
+  ) +
+  theme_bw(base_size = 10) +
+  theme(
+    axis.text.x      = element_text(angle = 30, hjust = 1, size = 8),
+    strip.background = element_rect(fill = "#D6EAF8"),
+    strip.text       = element_text(face = "bold", size = 9),
+    panel.grid.minor = element_blank()
+  )
+```
+
+
+```{r define joint matrix}
+# Full weekly spine: every 7 days from global min to global max
+all_weeks <- seq(min(cov$weekstart), max(cov$weekstart), by = "7 days")
+
+joint_matrix <- cov %>%
+  mutate(change = covN2/lag(covN2)) %>% # week-over-week change
+  select(site, weekstart, covN2) %>%
+  complete(site, weekstart = all_weeks) %>%   # pad all site × week combinations with NA
+  arrange(site, weekstart) %>%
+  pivot_wider(names_from = weekstart, values_from = covN2) %>%
+  column_to_rownames("site") %>%
+  as.matrix()
+
+vis_miss(as.data.frame(joint_matrix))
+```
+
+
+```{r impute missing}
+# For each site (row), linearly interpolate only between the first and last
+# observed (non-NA) value. NAs outside that window remain NA (site offline).
+impute_row <- function(row) {
+  obs <- which(!is.na(row))
+  if (length(obs) < 2L) return(row)   # 0 or 1 observation: nothing to interpolate
+  first <- obs[1L]; last <- obs[length(obs)]
+  row[first:last] <- approx(obs, row[obs], xout = first:last)$y
+  row
+}
+
+joint_matrix_complete <- t(apply(joint_matrix, 1, impute_row))
+
+cat("NAs before imputation:", sum(is.na(joint_matrix)), "\n")
+cat("NAs after imputation: ", sum(is.na(joint_matrix_complete)), "\n")
+cat("(Remaining NAs are leading/trailing offline periods.)\n")
+
+vis_miss(as.data.frame(joint_matrix_complete))
+```
+
 
 
 # Change-point detection for WBE
@@ -371,12 +493,12 @@ Since we have multiple sites, we might try to make some kind of 'synthetic state
 Unfortunately, this is subject to the many uncertainties inherent in wastewater surveillance across multiple sites [Joung et al (2023)](https://pmc.ncbi.nlm.nih.gov/articles/PMC10890812/pdf/CCDR-49-166.pdf), including:
 
 - **Target quantity**: The true target quantity of interest is the average viral load in a particular population week over week. This quantity varies naturally over time when the virus is in an endemic state. While this variation is not genuinely random, it can be modeled as such. For instance, we might assume it maintains some low-level average with as-if-Gaussian fluctuations from week to week, in which case the sequence is _stationary_ in the endemic phase.
-- **Sampling**: The methods of sample collection, shipping, and storage (compositing vs grab sampling, location, timing, shipping temperature, distance to lab, missing data), which may vary across sites and time.
+- **Sampling**: The methods of sample collection, shipping, and storage (compositing vs grab sampling, location, timing, shipping temperature, distance to lab, missing data), which may vary across sites and time. The sites that were selected for our purposes primarily used composite sampling.
 - **Analysis**: Laboratory analysis variability (de-gritting subsampling, homogenization, instrument error, human error).
 - **Infrastructure**: The location and engineering of sewage systems and wastewater treatment plants (catchment area size and population, combined or separate ('sanitary') collection of runoff and wastewater).
 - **Weather**: Weather conditions (rainwater or snowmelt contributing to influent, temperature, pH), which vary across sites and seasons, with some degree of stochasticity. 
 
-In the literature, these uncertainties are dealt with under the rubric of _normalization_, which is an active and un-clarified area of research. 
+In the literature, these uncertainties are dealt with under the rubric of _normalization_, which is an active  darea of research. 
 In some sense, defining a proper state of control from which deviations are meaningful is the whole challenge of WBE. 
 It may be easier to define the state of control for certain sites, like those with sanitary sewage systems that are less influenced by major weather events. 
 
@@ -391,100 +513,214 @@ This is attempted below.
 In either case, establishing a meaningful state of control (a simple or composite pre-change model) should be done separately from running a change-point algorithm, which can detect deviations but cannot define the state of control without a user. 
 
 
-## Example model and CPD
-
-This section is a placeholder.
-
-
-```{r remove trend and model as AR(1)}
-# 1. start with a single site with no missing data (Vancouver)
-site_series <- cov %>%
-  filter(site == "Vancouver Lions Gate") %>%
-  arrange(weekstart) %>%
-  mutate(y = log1p(w_avg)) %>%
-  mutate(log_change = y - lag(y)) %>%
-  filter(!is.na(log_change))
-
-x <- site_series$log_change # time series is the log change in concentrations
-
-# 2. Fit AR(2) using arima() (degree determined by AIC)
-fit <- arima(x, order = c(2, 0, 0))
-resid <- residuals(fit)
-
-# Fit diagnostics
-Box.test(resid, lag = 10, type = "Ljung-Box")
-par(mfrow = c(2, 2))
-plot(resid, type = "l", main = "Residuals over time")
-acf(resid, main = "ACF of residuals")
-pacf(resid, main = "PACF of residuals")
-qqnorm(resid); qqline(resid)
-```
-
-```{r detector on residuals}
-# point estimate of nuisance parameter 
-sigma_hat <- fit$sigma2
-model <- GaussianModel(
-  mean_pre = 0,
-  sd_pre = sigma_hat,
-  mean_post = c(0, 1), # this captures a one-sided alternative, that the rate of change increases
-  sd_post = sigma_hat,
-  method = "predictable"
-)
-inc <- compute_increments(TSM(model), x, log = TRUE)
-sr <- ShiryaevRobertsDetector(
-  alpha = 1/52, # average run length without false alarm is 1 year
-  criterion = "ARL")
-det_out <- run_detector(sr, inc, log = TRUE)
-```
-
-```{r plot detector}
-par(mfrow = c(2, 2))
-plot(site_series$w_avg, x = site_series$weekstart, type = 'l', lwd = 2, col = 'darkorange3', main = "Original Vancouver COVID WBE Data")
-plot(x, type = 'l', x = site_series$weekstart, lwd = 2, col = 'forestgreen', main = "Transformed Data (log-change)")
-
-
-z <- increments_to_tsm(inc, log = TRUE)
-plot(z, type = "l", lwd = 2, col = "steelblue",
-     main = "log-TSM sequence", xlab = "Week", x = site_series$weekstart, ylab = "TSM")
-
-plot(det_out$statistic, type = "l", lwd = 2, col = "firebrick",
-     main = "log-S-R statistic (ARL = 20)", xlab = "Week", x = site_series$weekstart, ylab = "R_t")
-abline(h = log(sr@threshold), lty = 3, col = "gray50")
-if (det_out$alarm) {
-  abline(v = site_series$weekstart[det_out$stopping_time], lwd = 2, col = "darkgreen")
-}
-par(mfrow = c(1,1))
-```
 
 ## Joint wastewater site monitoring
 
 To pass the wastewater data through the CPD algorithm, we need the site data as a matrix with `NA` where there are missing values. 
 The `multichangepoints` software is designed to accommodate leading NAs for sites that come online late. 
 
-```{r define joint matrix}
-# Full weekly spine: every 7 days from global min to global max
-all_weeks <- seq(min(cov$weekstart), max(cov$weekstart), by = "7 days")
 
-joint_matrix <- cov %>%
-  mutate(log_change = log1p(w_avg) - log1p(lag(w_avg))) %>%
-  select(site, weekstart, log_change) %>%
-  complete(site, weekstart = all_weeks) %>%   # pad all site × week combinations with NA
-  arrange(site, weekstart) %>%
-  pivot_wider(names_from = weekstart, values_from = log_change) %>%
-  column_to_rownames("site") %>%
-  as.matrix()
 
-cat("Dimensions: ", nrow(joint_matrix), "sites x", ncol(joint_matrix), "weeks\n")
-cat("Proportion NA: ", round(mean(is.na(joint_matrix)), 3), "\n")
-# white spaces are missing values
-image(t(joint_matrix), ylab = "Sites", xlab = "Weeks", xaxt = "n", yaxt = "n") 
+## State of control
+
+The appropriate state of control is essentially a causal inference problem, we imagine a _potential sequence_ with no epidemic and a potential sequence with epidemic for each site. 
+We observe an _interleaving_ of these sequences, with measurement error, and wish to identify when we switch between these states with little delay and with continuous monitoring. 
+
+The details of the state of control differ site-by-site, because sources of uncertainty vary across sites. 
+We log-transform the data and estimate the state of control separately at each site from held-out sections where we know COVID-19 levels were low in the population.
+We then assume that these are representative, in the sense that the distributions modeling them are stationary.
+
+
+### Seasonality
+
+We remove seasonality by defining a cubic B-spline for each site with two interior knots, capturing the broad two-stage pattern visible in the data: concentrations are elevated in winter and depressed in summer.
+
+The two knots are placed at the start of **Spring** (March 1, EpiWeek 9) and the start of **Fall** (September 1, EpiWeek 35), following PHAC / Environment Canada meteorological convention.
+With degree-3 B-splines and boundary knots at EpiWeeks 1 and 52, this yields 5 basis functions — enough flexibility to trace the annual high-winter / low-summer cycle without over-fitting.
+
+We fit a hierarchical model: a population-level cubic B-spline captures the shared seasonal shape, and each site gets its own random deviation on each spline coefficient (partially pooled across sites via independent random effects, one variance per basis function).
+The response is $\log_{10}(\text{covN2})$.
+
+```{r seasonality}
+library(splines)
+library(lme4)
+
+# Two interior knots at the two season transitions driving the annual cycle
+# (PHAC / Environment Canada meteorological convention):
+#   Spring = Mar 1 ~ EpiWk 9  |  Fall = Sep 1 ~ EpiWk 35
+season_knots <- c(9, 35)
+
+# ---- Stack imputed matrix to long format ------------------------------------
+ww_model <- joint_matrix_complete %>%
+  as.data.frame() %>%
+  rownames_to_column("site") %>%
+  pivot_longer(-site, names_to = "weekstart_chr", values_to = "covN2") %>%
+  mutate(
+    weekstart   = as.Date(weekstart_chr),
+    log10_covN2 = log10(covN2),
+    EpiWeek     = lubridate::epiweek(weekstart),
+    EpiYear     = lubridate::epiyear(weekstart),
+    site        = factor(site)
+  ) %>%
+  filter(!is.na(log10_covN2)) %>%
+  select(-weekstart_chr)
+
+# ---- B-spline basis with seasonal interior knots ----------------------------
+# degree = 3 (cubic); boundary knots = EpiWeeks 1 and 52
+B <- bs(ww_model$EpiWeek,
+        knots          = season_knots,
+        degree         = 3,
+        Boundary.knots = c(1, 52))
+spl_cols <- paste0("spl", seq_len(ncol(B)))
+colnames(B) <- spl_cols
+ww_model <- bind_cols(ww_model, as_tibble(B))
+
+# ---- Hierarchical lmer: fixed overall seasonal shape + per-site random ------
+# (0 + splK || site) = independent (diagonal) random effects on each basis
+# coefficient — partial pooling without assuming correlation across basis fns.
+fixed_rhs <- paste(spl_cols, collapse = " + ")
+rand_rhs  <- paste(sprintf("(0 + %s | site)", spl_cols), collapse = " + ")
+model_formula <- as.formula(
+  paste("log10_covN2 ~", fixed_rhs, "+", rand_rhs)
+)
+
+fit_seasonal <- lmer(
+  model_formula,
+  data    = ww_model,
+  REML    = TRUE,
+  control = lmerControl(optimizer = "bobyqa",
+                        optCtrl   = list(maxfun = 2e5))
+)
+
+ww_model <- ww_model %>%
+  mutate(
+    fitted_log10 = fitted(fit_seasonal),
+    resid_log10  = resid(fit_seasonal)
+  )
+```
+
+```{r seasonality figure, fig.height = 9, fig.width = 10, fig.cap = "Log10 SARS-CoV-2 wastewater signal per site (points) with fitted hierarchical seasonal spline (line)."}
+# shared theme
+theme_panel <- theme_bw(base_size = 10) +
+  theme(
+    axis.text.x      = element_text(angle = 30, hjust = 1, size = 8),
+    strip.background = element_rect(fill = "#D6EAF8"),
+    strip.text       = element_text(face = "bold", size = 9),
+    panel.grid.minor = element_blank()
+  )
+
+# Vertical guides at the two knot dates (spring and fall transitions)
+season_dates <- as.Date(c("2023-03-01", "2023-09-01",
+                           "2024-03-01", "2024-09-01",
+                           "2025-03-01", "2025-09-01"))
+
+# Plot 1: raw data + fitted spline
+ggplot(ww_model, aes(x = weekstart, colour = site, group = site)) +
+  geom_point(aes(y = log10_covN2), size = 0.8, alpha = 0.4) +
+  geom_line(aes(y = fitted_log10), linewidth = 0.9, alpha = 0.9) +
+  geom_vline(xintercept = season_dates, linetype = "dotted",
+             colour = "gray60", linewidth = 0.3) +
+  facet_wrap(~ site, ncol = 3, scales = "fixed") +
+  scale_x_date(date_breaks = "1 year", date_labels = "%Y") +
+  scale_colour_viridis_d(option = "turbo", guide = "none") +
+  labs(
+    x        = NULL,
+    y        = expression(log[10]~"signal (copies / mL)"),
+    title    = "Hierarchical seasonal spline fit",
+    subtitle = "Points = observed  |  Line = site-specific spline  |  Dotted = season start"
+  ) +
+  theme_panel
+```
+
+```{r seasonality residuals, fig.height = 9, fig.width = 10, fig.cap = "Residuals from the hierarchical seasonal spline model. Persistent positive deviations suggest epidemic signal above the seasonal baseline."}
+ggplot(ww_model, aes(x = weekstart, y = resid_log10,
+                     colour = site, group = site)) +
+  geom_hline(yintercept = 0, linewidth = 0.5, colour = "gray40") +
+  geom_line(linewidth = 0.55, alpha = 0.8) +
+  geom_vline(xintercept = season_dates, linetype = "dotted",
+             colour = "gray60", linewidth = 0.3) +
+  facet_wrap(~ site, ncol = 3, scales = "fixed") +
+  scale_x_date(date_breaks = "1 year", date_labels = "%Y") +
+  scale_colour_viridis_d(option = "turbo", guide = "none") +
+  labs(
+    x        = NULL,
+    y        = expression(log[10]~"residual"),
+    title    = "Residuals from hierarchical seasonal spline",
+    subtitle = "Deviations above 0 indicate signal above the seasonal baseline"
+  ) +
+  theme_panel
+```
+
+### Autocorrelation in residuals
+
+If the seasonal spline has absorbed all temporal structure, residuals should be approximately white noise within each site.
+We test this with (i) per-site ACF plots and (ii) the Ljung-Box portmanteau test at lag 4 (one month).
+
+```{r residual autocorrelation, fig.height = 9, fig.width = 10, fig.cap = "Sample ACF of spline residuals by site. Dashed blue lines are the 95% white-noise bounds. Bars extending beyond the bounds indicate significant autocorrelation at that lag."}
+# ---- ACF plot: one panel per site ------------------------------------------
+max_lag <- 20
+sites_ordered <- levels(ww_model$site)
+
+acf_df <- ww_model %>%
+  group_by(site) %>%
+  arrange(weekstart, .by_group = TRUE) %>%
+  summarise(
+    acf_vals = list(acf(resid_log10, lag.max = max_lag, plot = FALSE)$acf[-1]),
+    .groups  = "drop"
+  ) %>%
+  mutate(lag = list(seq_len(max_lag))) %>%
+  unnest(c(acf_vals, lag))
+
+ci <- qnorm(0.975) / sqrt(nrow(ww_model) / length(sites_ordered))  # approx per-site n
+
+ggplot(acf_df, aes(x = lag, y = acf_vals, colour = site)) +
+  geom_hline(yintercept = 0, colour = "gray40") +
+  geom_hline(yintercept = c(-ci, ci), linetype = "dashed",
+             colour = "steelblue", linewidth = 0.5) +
+  geom_segment(aes(xend = lag, yend = 0), linewidth = 0.8, alpha = 0.85) +
+  geom_point(size = 1.2) +
+  facet_wrap(~ site, ncol = 3) +
+  scale_colour_viridis_d(option = "turbo", guide = "none") +
+  scale_x_continuous(breaks = seq(0, max_lag, by = 4)) +
+  labs(
+    x        = "Lag (weeks)",
+    y        = "ACF",
+    title    = "Residual autocorrelation by site",
+    subtitle = "Dashed lines = 95% white-noise bounds"
+  ) +
+  theme_panel
+```
+
+```{r ljung-box test}
+# Ljung-Box test at lag 4 per site (H0: no autocorrelation up to lag 4)
+lb_results <- ww_model %>%
+  group_by(site) %>%
+  arrange(weekstart, .by_group = TRUE) %>%
+  summarise(
+    n        = n(),
+    lb_stat  = Box.test(resid_log10, lag = 4, type = "Ljung-Box")$statistic,
+    lb_pval  = Box.test(resid_log10, lag = 4, type = "Ljung-Box")$p.value,
+    .groups  = "drop"
+  ) %>%
+  mutate(
+    sig = case_when(
+      lb_pval < 0.001 ~ "***",
+      lb_pval < 0.01  ~ "**",
+      lb_pval < 0.05  ~ "*",
+      TRUE            ~ ""
+    )
+  ) %>%
+  arrange(lb_pval)
+
+knitr::kable(lb_results,
+             digits  = c(0, 0, 2, 3, 0),
+             col.names = c("Site", "n", "LB statistic", "p-value", ""),
+             caption = "Ljung-Box test for residual autocorrelation (lag = 4). Significant p-values indicate remaining temporal structure not captured by the seasonal spline.")
 ```
 
 
-Next steps: 
-
-- Handle gaps (missing data)
-- Allow repeat alarms (via resets)
+Next steps:
+- Need to decide what the appropriate signal to monitor is, and what it's 'state of control' should be. Probably we can pre-transform everything before monitoring, so that we are basically just tracking independent residuals. Then we can state the assumptions we need / run tests (like ACF) to ensure those properly follow the pre-change model (including independence).
 - Multiple testing error control (FWER, FDR)
-- Define appropriate state of control (pre-change model) on holdout. This is basically a causal inference problem: imagine a _potential sequence_ with no epidemic and a potential sequence with epidemic for each site. We observe an _interleaving_  (almost like a cross-over design) of these sequences, with measurement error, and wish to identify when we switch between these states with little delay and with continuous monitoring. 
+
 
