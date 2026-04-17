@@ -530,28 +530,15 @@ The details of the state of control differ site-by-site, because sources of unce
 We log-transform the data and estimate the state of control separately at each site from held-out sections where we know COVID-19 levels were low in the population.
 We then assume that these are representative, in the sense that the distributions modeling them are stationary.
 
+### Data splitting
 
-### Seasonality
+We need to split the data into a `training` and `test` set, so that the state of control is learned and validated separately. 
+So, we will use `2023-01-01` through `2025-01-01` to learn the pre-change model and the data since 2025 to check the performance of the algorithm given our modeling choices.
 
-We remove seasonality by defining a cubic B-spline for each site with two interior knots, capturing the broad two-stage pattern visible in the data: concentrations are elevated in winter and depressed in summer.
 
-The two knots are placed at the start of **Spring** (March 1, EpiWeek 9) and the start of **Fall** (September 1, EpiWeek 35), following PHAC / Environment Canada meteorological convention.
-With degree-3 B-splines and boundary knots at EpiWeeks 1 and 52, this yields 5 basis functions — enough flexibility to trace the annual high-winter / low-summer cycle without over-fitting.
-
-We fit a hierarchical model: a population-level cubic B-spline captures the shared seasonal shape, and each site gets its own random deviation on each spline coefficient (partially pooled across sites via independent random effects, one variance per basis function).
-The response is $\log_{10}(\text{covN2})$.
-
-```{r seasonality}
-library(splines)
-library(lme4)
-
-# Two interior knots at the two season transitions driving the annual cycle
-# (PHAC / Environment Canada meteorological convention):
-#   Spring = Mar 1 ~ EpiWk 9  |  Fall = Sep 1 ~ EpiWk 35
-season_knots <- c(9, 35)
-
+```{r split data}
 # ---- Stack imputed matrix to long format ------------------------------------
-ww_model <- joint_matrix_complete %>%
+data <- joint_matrix_complete %>%
   as.data.frame() %>%
   rownames_to_column("site") %>%
   pivot_longer(-site, names_to = "weekstart_chr", values_to = "covN2") %>%
@@ -565,15 +552,54 @@ ww_model <- joint_matrix_complete %>%
   filter(!is.na(log10_covN2)) %>%
   select(-weekstart_chr)
 
-# ---- B-spline basis with seasonal interior knots ----------------------------
-# degree = 3 (cubic); boundary knots = EpiWeeks 1 and 52
-B <- bs(ww_model$EpiWeek,
-        knots          = season_knots,
-        degree         = 3,
-        Boundary.knots = c(1, 52))
+# data splitting
+train_data <- data %>%
+  filter(weekstart >= as.Date('2023-01-01'), weekstart <= as.Date('2025-01-01'))
+test_data <- data %>%
+  filter(weekstart > as.Date('2025-01-01'))
+```
+
+### Seasonality
+
+We first remove seasonality by defining a **cyclic cubic spline** for each site with four interior knots, one at the start of each meteorological season (PHAC / Environment Canada convention):
+
+| Season | Date | EpiWeek |
+|--------|------|---------|
+| Spring | March 1 | 9 |
+| Summer | June 1 | 22 |
+| Fall | September 1 | 35 |
+| Winter | December 1 | 48 |
+
+A standard B-spline defined on EpiWeek 1–52 treats the two boundary weeks as unrelated, producing a discontinuity at the year transition (EpiWeek 52 → EpiWeek 1).
+A **cyclic** cubic spline (`bs="cc"` in `mgcv`) instead enforces that the function value and its first two derivatives match at the two boundary knots, so the fitted seasonal curve is smooth across the year boundary.
+With 4 interior knots this gives 6 basis functions.
+
+We fit a hierarchical model: a population-level cubic B-spline captures the shared seasonal shape, and each site gets its own random deviation on each spline coefficient (partially pooled across sites via independent random effects, one variance per basis function).
+The response is $\log_{10}(\text{covN2})$.
+
+```{r seasonality}
+library(mgcv)
+library(lme4)
+
+# Four interior knots at meteorological season starts (PHAC convention)
+# Boundary knots 1 and 52 are identified (cyclic constraint)
+season_knots <- c(9, 22, 35, 48)
+knot_list    <- list(EpiWeek = c(1, season_knots, 52))   # 6 total knot positions
+
+# ---- Cyclic cubic spline basis via mgcv -------------------------------------
+# bs="cc": cyclic cubic regression spline — value and first two derivatives
+# match at EpiWeek 1 = EpiWeek 52, giving a smooth year-to-year transition.
+# k=6 matches the 6 knot positions; yields 6 basis functions.
+sm <- smoothCon(
+  s(EpiWeek, bs = "cc", k = 6),
+  data   = data.frame(EpiWeek = train_data$EpiWeek),
+  knots  = knot_list
+)[[1]]
+
+B        <- sm$X
 spl_cols <- paste0("spl", seq_len(ncol(B)))
 colnames(B) <- spl_cols
-ww_model <- bind_cols(ww_model, as_tibble(B))
+train_data <- bind_cols(train_data, as_tibble(B))
 
 # ---- Hierarchical lmer: fixed overall seasonal shape + per-site random ------
 # (0 + splK || site) = independent (diagonal) random effects on each basis
@@ -586,13 +612,13 @@ model_formula <- as.formula(
 
 fit_seasonal <- lmer(
   model_formula,
-  data    = ww_model,
+  data    = train_data,
   REML    = TRUE,
   control = lmerControl(optimizer = "bobyqa",
                         optCtrl   = list(maxfun = 2e5))
 )
 
-ww_model <- ww_model %>%
+train_data <- train_data %>%
   mutate(
     fitted_log10 = fitted(fit_seasonal),
     resid_log10  = resid(fit_seasonal)
@@ -609,13 +635,13 @@ theme_panel <- theme_bw(base_size = 10) +
     panel.grid.minor = element_blank()
   )
 
-# Vertical guides at the two knot dates (spring and fall transitions)
-season_dates <- as.Date(c("2023-03-01", "2023-09-01",
-                           "2024-03-01", "2024-09-01",
-                           "2025-03-01", "2025-09-01"))
+# Vertical guides at all four season-start knot dates
+season_dates <- as.Date(c("2023-03-01", "2023-06-01", "2023-09-01", "2023-12-01",
+                           "2024-03-01", "2024-06-01", "2024-09-01", "2024-12-01",
+                           "2025-03-01", "2025-06-01", "2025-09-01", "2025-12-01"))
 
 # Plot 1: raw data + fitted spline
-ggplot(ww_model, aes(x = weekstart, colour = site, group = site)) +
+ggplot(train_data, aes(x = weekstart, colour = site, group = site)) +
   geom_point(aes(y = log10_covN2), size = 0.8, alpha = 0.4) +
   geom_line(aes(y = fitted_log10), linewidth = 0.9, alpha = 0.9) +
   geom_vline(xintercept = season_dates, linetype = "dotted",
@@ -633,7 +659,7 @@ ggplot(ww_model, aes(x = weekstart, colour = site, group = site)) +
 ```
 
 ```{r seasonality residuals, fig.height = 9, fig.width = 10, fig.cap = "Residuals from the hierarchical seasonal spline model. Persistent positive deviations suggest epidemic signal above the seasonal baseline."}
-ggplot(ww_model, aes(x = weekstart, y = resid_log10,
+ggplot(train_data, aes(x = weekstart, y = resid_log10,
                      colour = site, group = site)) +
   geom_hline(yintercept = 0, linewidth = 0.5, colour = "gray40") +
   geom_line(linewidth = 0.55, alpha = 0.8) +
@@ -659,9 +685,9 @@ We test this with (i) per-site ACF plots and (ii) the Ljung-Box portmanteau test
 ```{r residual autocorrelation, fig.height = 9, fig.width = 10, fig.cap = "Sample ACF of spline residuals by site. Dashed blue lines are the 95% white-noise bounds. Bars extending beyond the bounds indicate significant autocorrelation at that lag."}
 # ---- ACF plot: one panel per site ------------------------------------------
 max_lag <- 20
-sites_ordered <- levels(ww_model$site)
+sites_ordered <- levels(train_data$site)
 
-acf_df <- ww_model %>%
+acf_df <- train_data %>%
   group_by(site) %>%
   arrange(weekstart, .by_group = TRUE) %>%
   summarise(
@@ -671,7 +697,7 @@ acf_df <- ww_model %>%
   mutate(lag = list(seq_len(max_lag))) %>%
   unnest(c(acf_vals, lag))
 
-ci <- qnorm(0.975) / sqrt(nrow(ww_model) / length(sites_ordered))  # approx per-site n
+ci <- qnorm(0.975) / sqrt(nrow(train_data) / length(sites_ordered))  # approx per-site n
 
 ggplot(acf_df, aes(x = lag, y = acf_vals, colour = site)) +
   geom_hline(yintercept = 0, colour = "gray40") +
@@ -693,7 +719,7 @@ ggplot(acf_df, aes(x = lag, y = acf_vals, colour = site)) +
 
 ```{r ljung-box test}
 # Ljung-Box test at lag 4 per site (H0: no autocorrelation up to lag 4)
-lb_results <- ww_model %>%
+lb_results <- train_data %>%
   group_by(site) %>%
   arrange(weekstart, .by_group = TRUE) %>%
   summarise(
