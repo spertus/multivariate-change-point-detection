@@ -745,8 +745,23 @@ knitr::kable(lb_results,
 ```
 
 
-Next steps:
+Notes:
+- Simultaneous error control (FWER, FDR) should be added to the software to allow for cases where *localization* of the change-point(s) is a goal. This is multiple testing, not intersection testing.
+
 - Need to decide what the appropriate signal to monitor is, and what it's 'state of control' should be. Probably we can pre-transform everything before monitoring, so that we are basically just tracking independent residuals. Then we can state the assumptions we need / run tests (like ACF) to ensure those properly follow the pre-change model (including independence).
-- Multiple testing error control (FWER, FDR)
+- Another possibility is to *not* try to detect changes in the raw signal, but instead to use data on hospitalizations, as in recent work by [Peng et al (2025)](https://www.sciencedirect.com/science/article/pii/S1755436525000283) that maps the data to hospitalizations in Ottawa using distributed lag models. The model coefficients could be fit at each site using the ordered lasso [Tibshirani and Suo (2023)](https://pmc.ncbi.nlm.nih.gov/articles/PMC10004099/), a DL transformer, or another procedure, and we could try to detect anomalies in the *residuals* on the assumption that the residuals follow some distribution. For example we could test for deviations from normality. If we go this route, there are few things to be mindful of:
+
+1) Use a DLM from the literature [Peng et al (2025)](https://www.sciencedirect.com/science/article/pii/S1755436525000283), at least the structural components (the coefficients may need to be refit at each site)
+2) The detection target is now 'deviations from good predictions' not 'deviations from an endemic state' that is, we aim to detect when the prediction models are no longer working and further investigation is needed. The deviations could be due to various factors including:
+  - A new variant where shedding-per-infection changes (most important signal)
+  - Change in hospitalization reporting or admission thresholds (less important)
+  - Change in sampling or testing procedures at wastewater sites (less important)
+  - Change in catchment population (e.g. due to seasonal tourism) for wastewater or for hospitals (less important)
+Any deviation is important in the sense that it merits further attention, but the first kind is the most directly relevant in a scientific or public health sense.
+3) **Hospitalization data** is needed near as many sites as possible. An initial search indicates that I could probably do Ottawa (via Peng et al data), and possibly also one Montreal site and one Toronto site (the hospital data is aggregated across catchments). Therefore the size of the analysis would be greatly reduced compared to the 13 sites I currently have.
+4) Residuals are still likely to exhibit temporal autocorrelation. We will need to estimate parameters that determine their conditional mean either for a Gaussian-AR TSM or for a Betting-AR TSM. 
+
+- It may be interesting to do both: (a) directly monitoring signals and (b) monitoring residuals from hospital predictions.
+  
 
 

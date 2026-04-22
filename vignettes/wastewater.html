@@ -1291,13 +1291,65 @@ by the seasonal spline.</caption>
 </tr>
 </tbody>
 </table>
-<p>Next steps: - Need to decide what the appropriate signal to monitor
-is, and what it’s ‘state of control’ should be. Probably we can
-pre-transform everything before monitoring, so that we are basically
-just tracking independent residuals. Then we can state the assumptions
-we need / run tests (like ACF) to ensure those properly follow the
-pre-change model (including independence). - Multiple testing error
-control (FWER, FDR)</p>
+<p>Notes: - Simultaneous error control (FWER, FDR) should be added to
+the software to allow for cases where <em>localization</em> of the
+change-point(s) is a goal. This is multiple testing, not intersection
+testing.</p>
+<ul>
+<li>Need to decide what the appropriate signal to monitor is, and what
+it’s ‘state of control’ should be. Probably we can pre-transform
+everything before monitoring, so that we are basically just tracking
+independent residuals. Then we can state the assumptions we need / run
+tests (like ACF) to ensure those properly follow the pre-change model
+(including independence).</li>
+<li>Another possibility is to <em>not</em> try to detect changes in the
+raw signal, but instead to use data on hospitalizations, as in recent
+work by <a href="https://www.sciencedirect.com/science/article/pii/S1755436525000283">Peng
+et al (2025)</a> that maps the data to hospitalizations in Ottawa using
+distributed lag models. The model coefficients could be fit at each site
+using the ordered lasso <a href="https://pmc.ncbi.nlm.nih.gov/articles/PMC10004099/">Tibshirani and
+Suo (2023)</a>, a DL transformer, or another procedure, and we could try
+to detect anomalies in the <em>residuals</em> on the assumption that the
+residuals follow some distribution. For example we could test for
+deviations from normality. If we go this route, there are few things to
+be mindful of:</li>
+</ul>
+<ol style="list-style-type: decimal">
+<li>Use a DLM from the literature <a href="https://www.sciencedirect.com/science/article/pii/S1755436525000283">Peng
+et al (2025)</a>, at least the structural components (the coefficients
+may need to be refit at each site)</li>
+<li>The detection target is now ‘deviations from good predictions’ not
+‘deviations from an endemic state’ that is, we aim to detect when the
+prediction models are no longer working and further investigation is
+needed. The deviations could be due to various factors including:</li>
+</ol>
+<ul>
+<li>A new variant where shedding-per-infection changes (most important
+signal)</li>
+<li>Change in hospitalization reporting or admission thresholds (less
+important)</li>
+<li>Change in sampling or testing procedures at wastewater sites (less
+important)</li>
+<li>Change in catchment population (e.g. due to seasonal tourism) for
+wastewater or for hospitals (less important) Any deviation is important
+in the sense that it merits further attention, but the first kind is the
+most directly relevant in a scientific or public health sense.</li>
+</ul>
+<ol start="3" style="list-style-type: decimal">
+<li><strong>Hospitalization data</strong> is needed near as many sites
+as possible. An initial search indicates that I could probably do Ottawa
+(via Peng et al data), and possibly also one Montreal site and one
+Toronto site (the hospital data is aggregated across catchments).
+Therefore the size of the analysis would be greatly reduced compared to
+the 13 sites I currently have.</li>
+<li>Residuals are still likely to exhibit temporal autocorrelation. We
+will need to estimate parameters that determine their conditional mean
+either for a Gaussian-AR TSM or for a Betting-AR TSM.</li>
+</ol>
+<ul>
+<li>It may be interesting to do both: (a) directly monitoring signals
+and (b) monitoring residuals from hospital predictions.</li>
+</ul>
 </div>
 </div>
 </div>
