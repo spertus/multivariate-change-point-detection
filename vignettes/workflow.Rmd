@@ -422,6 +422,96 @@ par(old_par)
 
 
 
+## AR(3) change-point detection
+
+So far every example has used iid Gaussian data. Here we demonstrate that the same pipeline handles
+**autoregressive** observations. We use an AR(3) process with a shift in the long-run mean from 0
+(pre-change) to 0.5 (post-change); the AR coefficients and innovation variance are held fixed across
+regimes so that only the level shifts.
+
+### 1. Define model and simulate data
+
+```{r ar3 model and data}
+set.seed(42)
+N_ar  <- 300   # total horizon
+nu_ar <- 150   # change-point
+
+# AR(3) coefficients: moderate persistence, clearly stationary
+phi <- c(0.5, 0.2, 0.1)   # phi_1, phi_2, phi_3  (sum = 0.8 < 1)
+sigma_ar <- 0.5
+
+model_ar3 <- ARpModel(
+  phi_pre   = phi, sigma_pre  = sigma_ar, mean_pre  = 0,
+  phi_post  = phi, sigma_post = sigma_ar, mean_post = 0.5
+)
+
+# Simulate an AR(3) path with a change at nu_ar
+# Using the intercept parameterisation internally stored in the object
+intercept_pre  <- model_ar3@mean_pre  * (1 - sum(phi))
+intercept_post <- model_ar3@mean_post * (1 - sum(phi))
+
+x_ar <- numeric(N_ar)
+x_ar[1:3] <- 0   # initialise at pre-change mean
+for (t in 4:N_ar) {
+  intercept <- if (t <= nu_ar) intercept_pre else intercept_post
+  x_ar[t]   <- intercept +
+    phi[1] * x_ar[t - 1] +
+    phi[2] * x_ar[t - 2] +
+    phi[3] * x_ar[t - 3] +
+    rnorm(1, sd = sigma_ar)
+}
+```
+
+### 2. Compute TSM increments and run the detector
+
+```{r ar3 detection}
+tsm_ar3 <- TSM(model_ar3)
+
+# compute_increments handles the history automatically via the generic loop
+inc_ar3 <- compute_increments(tsm_ar3, x_ar, log = TRUE)
+
+sr_ar3  <- ShiryaevRobertsDetector(alpha = 0.001, criterion = "ARL")
+det_ar3 <- run_detector(sr_ar3, inc_ar3, log = TRUE)
+
+cat("Stopping time:", det_ar3$stopping_time, "\n")
+cat("Change-point: ", nu_ar, "\n")
+cat("Detection delay:", det_ar3$stopping_time - nu_ar, "weeks\n")
+```
+
+### 3. Summarise and visualise performance
+
+```{r ar3 figure, fig.cap = "AR(3) change-point detection. Left: simulated path with true change-point (dashed) and alarm (green). Centre: log-TSM path. Right: log-S-R statistic with threshold and alarm."}
+old_par <- par(mfrow = c(1, 3))
+
+# Panel 1: data
+plot(x_ar, type = "l", lwd = 1.2, col = "gray30",
+     xlab = "time", ylab = expression(X[t]), main = "AR(3) data")
+abline(v = nu_ar, lty = 2, col = "gray50")
+if (is.finite(det_ar3$stopping_time))
+  abline(v = det_ar3$stopping_time, lwd = 2, col = "darkgreen")
+legend("topleft", legend = c("change", "alarm"),
+       lty = c(2, 1), lwd = c(1, 2), col = c("gray50", "darkgreen"),
+       bty = "n", cex = 0.8)
+
+# Panel 2: log-TSM path
+tsm_path_ar3 <- increments_to_tsm(inc_ar3, log = TRUE)
+plot(tsm_path_ar3, type = "l", lwd = 2, col = "steelblue",
+     xlab = "time", ylab = "log TSM", main = "Log-TSM")
+abline(v = nu_ar, lty = 2, col = "gray50")
+if (is.finite(det_ar3$stopping_time))
+  abline(v = det_ar3$stopping_time, lwd = 2, col = "darkgreen")
+
+# Panel 3: log-S-R statistic
+plot(det_ar3$statistic, type = "l", lwd = 2, col = "firebrick",
+     xlab = "time", ylab = expression(log~R[t]), main = "Log-S-R statistic")
+abline(h = log(sr_ar3@threshold), lty = 3, col = "gray50")
+abline(v = nu_ar, lty = 2, col = "gray50")
+if (is.finite(det_ar3$stopping_time))
+  abline(v = det_ar3$stopping_time, lwd = 2, col = "darkgreen")
+
+par(old_par)
+```
+
 <!-- ## Application to commodity prices -->
 
 <!-- ```{r} -->
