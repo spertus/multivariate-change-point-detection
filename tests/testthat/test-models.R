@@ -14,24 +14,115 @@ test_that("Bernoulli model increment favors post-change when x=1 and p_post>p_pr
 })
 
 test_that("AR1 model uses history", {
-  m <- AR1Model(phi_pre = 0.1, sigma_pre = 1, mu_0 = 0, phi_post = 0.8, sigma_post = 1, mu_1 = 0, x0 = 0)
+  m <- AR1Model(phi_pre = 0.1, sigma_pre = 1, mean_pre = 0, phi_post = 0.8, sigma_post = 1, mean_post = 0, x0 = 0)
   d_no_hist <- model_density(m, x = 1, regime = "post", history = NULL)
-  d_hist <- model_density(m, x = 1, regime = "post", history = c(10))
+  d_hist    <- model_density(m, x = 1, regime = "post", history = c(10))
   expect_false(isTRUE(all.equal(d_no_hist, d_hist)))
 })
 
-test_that("AR1 model respects specified pre/post process means", {
-  m <- AR1Model(phi_pre = 0.7, sigma_pre = 1, mu_0 = 2, phi_post = 0.7, sigma_post = 1, mu_1 = -1, x0 = 2)
-  d_pre <- model_density(m, x = 2, regime = "pre", history = c(2))
-  d_post <- model_density(m, x = 2, regime = "post", history = c(2))
+test_that("AR1 model respects specified pre/post long-run means", {
+  m <- AR1Model(phi_pre = 0.7, sigma_pre = 1, mean_pre = 2, phi_post = 0.7, sigma_post = 1, mean_post = -1, x0 = 2)
+  d_pre  <- model_density(m, x = 2,  regime = "pre",  history = c(2))
+  d_post <- model_density(m, x = 2,  regime = "post", history = c(2))
   expect_gt(d_pre, d_post)
 })
 
-test_that("AR1 conditional mean uses intercept parameterization", {
-  m <- AR1Model(phi_pre = 0.5, sigma_pre = 1, mu_0 = 2, phi_post = 0.5, sigma_post = 1, mu_1 = 2, x0 = 0)
-  d_at_mean <- model_density(m, x = 4, regime = "pre", history = c(4))
-  d_off_mean <- model_density(m, x = 3, regime = "pre", history = c(4))
+test_that("AR1 long-run mean: density peaks at unconditional mean when process is at stationarity", {
+  # When X_{t-1} = m, the conditional mean is mu + phi * m = m*(1-phi) + phi*m = m,
+  # so the density should peak at x = m.
+  m_val <- 3
+  phi   <- 0.6
+  m <- AR1Model(phi_pre = phi, sigma_pre = 1, mean_pre = m_val,
+                phi_post = phi, sigma_post = 1, mean_post = m_val, x0 = m_val)
+  d_at_mean  <- model_density(m, x = m_val,     regime = "pre", history = c(m_val))
+  d_off_mean <- model_density(m, x = m_val + 1, regime = "pre", history = c(m_val))
   expect_gt(d_at_mean, d_off_mean)
+})
+
+# ---- ARpModel tests ----------------------------------------------------------
+
+test_that("ARpModel constructor accepts valid stationary AR(2)", {
+  m <- ARpModel(phi_pre  = c(0.5, 0.2), sigma_pre  = 1, mean_pre  = 0,
+                phi_post = c(0.3, 0.1), sigma_post = 1, mean_post = 2)
+  expect_s4_class(m, "ARpModel")
+  expect_equal(m@mean_pre,  0)
+  expect_equal(m@mean_post, 2)
+})
+
+test_that("ARpModel rejects non-stationary pre-change model", {
+  # phi_1 = 1.0 gives unit root — not stationary
+  expect_error(
+    ARpModel(phi_pre  = c(1.0), sigma_pre  = 1, mean_pre  = 0,
+             phi_post = c(0.5), sigma_post = 1, mean_post = 0),
+    "Pre-change AR model is not stationary"
+  )
+})
+
+test_that("ARpModel rejects non-stationary post-change model", {
+  expect_error(
+    ARpModel(phi_pre  = c(0.5), sigma_pre  = 1, mean_pre  = 0,
+             phi_post = c(0.8, 0.6), sigma_post = 1, mean_post = 0),
+    "Post-change AR model is not stationary"
+  )
+})
+
+test_that("ARpModel model_density returns higher density at conditional mean", {
+  phi <- c(0.5, 0.2)
+  m <- ARpModel(phi_pre = phi, sigma_pre = 1, mean_pre = 0,
+                phi_post = phi, sigma_post = 1, mean_post = 0)
+  # With history = c(1, 2): lags = [2, 1]; intercept = 0; cond mean = 0.5*2 + 0.2*1 = 1.2
+  cond_mean  <- 0.5 * 2 + 0.2 * 1
+  d_at_cm    <- model_density(m, x = cond_mean,     regime = "pre", history = c(1, 2))
+  d_off_cm   <- model_density(m, x = cond_mean + 2, regime = "pre", history = c(1, 2))
+  expect_gt(d_at_cm, d_off_cm)
+})
+
+test_that("ARpModel model_density uses x0 when history is shorter than order", {
+  phi <- c(0.4, 0.3)
+  m <- ARpModel(phi_pre = phi, sigma_pre = 1, mean_pre = 0,
+                phi_post = phi, sigma_post = 1, mean_post = 0, x0 = 5)
+  # history length 1 < p=2: lags = [hist[1], x0] = [1, 5]; cond mean = 0.4*1 + 0.3*5 = 1.9
+  cond_mean <- 0.4 * 1 + 0.3 * 5
+  d_cm <- model_density(m, x = cond_mean, regime = "pre", history = c(1))
+  d_off <- model_density(m, x = cond_mean + 3, regime = "pre", history = c(1))
+  expect_gt(d_cm, d_off)
+})
+
+test_that("ARpModel long-run mean is recovered: when process is at m, cond mean = m", {
+  phi   <- c(0.3, 0.2)
+  m_val <- 4
+  m <- ARpModel(phi_pre = phi, sigma_pre = 0.5, mean_pre = m_val,
+                phi_post = phi, sigma_post = 0.5, mean_post = m_val)
+  # Stationary: X_{t-1} = X_{t-2} = m  =>  cond mean = intercept + phi1*m + phi2*m
+  # = m*(1-phi1-phi2) + (phi1+phi2)*m = m
+  intercept  <- m_val * (1 - sum(phi))
+  cond_mean  <- intercept + sum(phi) * m_val
+  expect_equal(cond_mean, m_val, tolerance = 1e-12)
+  d_cm  <- model_density(m, x = m_val,     regime = "pre", history = rep(m_val, 3))
+  d_off <- model_density(m, x = m_val + 1, regime = "pre", history = rep(m_val, 3))
+  expect_gt(d_cm, d_off)
+})
+
+test_that("ARpModel: AR(1) special case matches AR1Model output", {
+  phi_v  <- 0.6; sigma_v <- 0.8; m_val <- 2
+  m_arp  <- ARpModel(phi_pre  = phi_v, sigma_pre  = sigma_v, mean_pre  = m_val,
+                     phi_post = phi_v, sigma_post = sigma_v, mean_post = m_val)
+  m_ar1  <- AR1Model(phi_pre  = phi_v, sigma_pre  = sigma_v, mean_pre  = m_val,
+                     phi_post = phi_v, sigma_post = sigma_v, mean_post = m_val, x0 = 0)
+  hist <- c(1, 3)
+  d_arp <- model_density(m_arp, x = 2.5, regime = "pre", history = hist)
+  d_ar1 <- model_density(m_ar1, x = 2.5, regime = "pre", history = hist)
+  expect_equal(d_arp, d_ar1, tolerance = 1e-12)
+})
+
+test_that("ARpModel: compute_increments runs end-to-end via generic fallback", {
+  m <- ARpModel(phi_pre  = c(0.5, 0.1), sigma_pre  = 1, mean_pre  = 0,
+                phi_post = c(0.5, 0.1), sigma_post = 0.5, mean_post = 3)
+  tsm <- TSM(m)
+  x   <- c(rnorm(20), rnorm(20, mean = 3, sd = 0.5))
+  inc <- compute_increments(tsm, x, log = TRUE)
+  expect_equal(length(inc), 40L)
+  expect_true(all(is.finite(inc)))
 })
 
 test_that("Multivariate Gaussian model returns scalar density and valid increment", {

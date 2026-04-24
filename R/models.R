@@ -65,13 +65,31 @@ setClass(
 setClass("BernoulliModel", contains = "UnivariateModel", slots = c(p_pre = "numeric", p_post = "numeric"))
 
 # Class: AR1Model
-# purpose: Gaussian AR(1) model with intercept parameterization
+# purpose: Gaussian AR(1) model, parameterized by long-run mean and AR coefficient
 setClass(
   "AR1Model",
   contains = "UnivariateModel",
   slots = c(
     phi_pre = "numeric", sigma_pre = "numeric", mu_pre = "numeric",
     phi_post = "numeric", sigma_post = "numeric", mu_post = "numeric", x0 = "numeric"
+  )
+)
+
+# Class: ARpModel
+# purpose: Gaussian AR(p) model with potentially different pre/post orders;
+#          parameterized by long-run mean, AR coefficients, and innovation sd
+# slots:
+#   phi_pre, phi_post     = numeric vectors of AR coefficients (length = order p)
+#   sigma_pre, sigma_post = positive innovation sd scalars
+#   mean_pre, mean_post   = long-run (unconditional) means
+#   x0                    = numeric scalar used as the initial lag when history is too short
+setClass(
+  "ARpModel",
+  contains = "UnivariateModel",
+  slots = c(
+    phi_pre   = "numeric", sigma_pre  = "numeric", mean_pre  = "numeric",
+    phi_post  = "numeric", sigma_post = "numeric", mean_post = "numeric",
+    x0        = "numeric"
   )
 )
 
@@ -90,6 +108,30 @@ setClass(
 
 # helper: clamp scalar x into [lo, hi]
 .clamp <- function(x, lo, hi) min(max(x, lo), hi)
+
+# helper: check whether an AR coefficient vector defines a stationary process
+# Stationarity iff all roots of the characteristic polynomial 1 - phi_1*z - ... - phi_p*z^p
+# lie strictly outside the complex unit circle, equivalently all roots of
+# z^p - phi_1*z^(p-1) - ... - phi_p have modulus > 1.
+.ar_is_stationary <- function(phi) {
+  p <- length(phi)
+  if (p == 0L) return(TRUE)
+  # Companion form: characteristic polynomial coefficients (highest degree first)
+  char_poly <- c(1, -phi)
+  roots <- polyroot(char_poly)
+  all(Mod(roots) > 1 + 1e-8)
+}
+
+# helper: convert long-run mean m to AR intercept
+# For AR(p): E[X] = mu / (1 - sum(phi))  =>  mu = m * (1 - sum(phi))
+.ar_intercept_from_mean <- function(m, phi) {
+  m * (1 - sum(phi))
+}
+
+# helper: convert AR intercept mu to long-run mean
+.ar_mean_from_intercept <- function(mu, phi) {
+  mu / (1 - sum(phi))
+}
 
 # helper: project vector v into a K-by-2 box
 .project_box <- function(v, box) pmin(pmax(v, box[, 1]), box[, 2])
@@ -592,32 +634,72 @@ BernoulliModel <- function(p_pre, p_post, name = "bernoulli") {
 
 # Constructor: AR1Model
 # inputs:
-#   phi_pre, phi_post     = AR(1) coefficients in (-1,1)
+#   phi_pre, phi_post     = AR(1) coefficients in (-1, 1)
 #   sigma_pre, sigma_post = positive innovation sd
-#   mu_0, mu_1            = intercept terms for pre/post conditional means
+#   mean_pre, mean_post   = long-run (unconditional) means of the pre/post processes
 #   x0                    = initial value when no history is available
 #   name                  = model label
 # outputs:
 #   AR1Model object
-AR1Model <- function(phi_pre, sigma_pre, mu_0 = 0, phi_post, sigma_post, mu_1 = 0, x0 = 0, name = "ar1") {
+AR1Model <- function(phi_pre, sigma_pre, mean_pre = 0, phi_post, sigma_post, mean_post = 0, x0 = 0, name = "ar1") {
   stopifnot(
-    length(phi_pre) == 1L, length(phi_post) == 1L,
-    abs(phi_pre) < 1, abs(phi_post) < 1,
-    sigma_pre > 0, sigma_post > 0,
-    length(mu_0) == 1L, length(mu_1) == 1L,
+    length(phi_pre)   == 1L, length(phi_post)  == 1L,
+    abs(phi_pre) < 1,        abs(phi_post) < 1,
+    sigma_pre > 0,           sigma_post > 0,
+    length(mean_pre)  == 1L, length(mean_post) == 1L,
     length(x0) == 1L
   )
 
   new(
     "AR1Model",
-    name = name,
-    phi_pre = phi_pre,
-    sigma_pre = sigma_pre,
-    mu_pre = mu_0,
-    phi_post = phi_post,
+    name       = name,
+    phi_pre    = phi_pre,
+    sigma_pre  = sigma_pre,
+    mu_pre     = .ar_intercept_from_mean(mean_pre, phi_pre),
+    phi_post   = phi_post,
     sigma_post = sigma_post,
-    mu_post = mu_1,
-    x0 = x0
+    mu_post    = .ar_intercept_from_mean(mean_post, phi_post),
+    x0         = x0
+  )
+}
+
+# Constructor: ARpModel
+# inputs:
+#   phi_pre, phi_post     = numeric vectors of AR coefficients (order p = length of vector)
+#   sigma_pre, sigma_post = positive innovation sd scalars
+#   mean_pre, mean_post   = long-run (unconditional) means
+#   x0                    = scalar used as the initial lag when history is too short
+#   name                  = model label
+# outputs:
+#   ARpModel object
+ARpModel <- function(phi_pre, sigma_pre, mean_pre = 0,
+                     phi_post, sigma_post, mean_post = 0,
+                     x0 = 0, name = "arp") {
+  phi_pre  <- as.numeric(phi_pre)
+  phi_post <- as.numeric(phi_post)
+  stopifnot(
+    length(phi_pre) >= 1L, length(phi_post) >= 1L,
+    sigma_pre > 0, sigma_post > 0,
+    length(mean_pre) == 1L, length(mean_post) == 1L,
+    length(x0) == 1L
+  )
+  if (!.ar_is_stationary(phi_pre)) {
+    stop("Pre-change AR model is not stationary: all roots of the characteristic polynomial must lie outside the unit circle.", call. = FALSE)
+  }
+  if (!.ar_is_stationary(phi_post)) {
+    stop("Post-change AR model is not stationary: all roots of the characteristic polynomial must lie outside the unit circle.", call. = FALSE)
+  }
+
+  new(
+    "ARpModel",
+    name       = name,
+    phi_pre    = phi_pre,
+    sigma_pre  = sigma_pre,
+    mean_pre   = as.numeric(mean_pre),
+    phi_post   = phi_post,
+    sigma_post = sigma_post,
+    mean_post  = as.numeric(mean_post),
+    x0         = as.numeric(x0)
   )
 }
 
@@ -700,6 +782,37 @@ setMethod("model_density", "AR1Model", function(object, x, regime = c("pre", "po
     return(stats::dnorm(x, mean = object@mu_pre + object@phi_pre * prev, sd = object@sigma_pre))
   }
   stats::dnorm(x, mean = object@mu_post + object@phi_post * prev, sd = object@sigma_post)
+})
+
+# Method: model_density for ARpModel
+# inputs:
+#   object  = ARpModel
+#   x       = scalar observation
+#   regime  = "pre" or "post"
+#   history = numeric vector of past observations (most recent last); if shorter
+#             than order p, earlier lags are filled with x0
+# outputs:
+#   numeric Gaussian conditional density value
+setMethod("model_density", "ARpModel", function(object, x, regime = c("pre", "post"), history = NULL) {
+  regime <- match.arg(regime)
+
+  phi    <- if (regime == "pre") object@phi_pre  else object@phi_post
+  sigma  <- if (regime == "pre") object@sigma_pre else object@sigma_post
+  m      <- if (regime == "pre") object@mean_pre  else object@mean_post
+  mu     <- .ar_intercept_from_mean(m, phi)   # conditional intercept
+  p      <- length(phi)
+
+  # Build lag vector of length p, padding with x0 when history is too short
+  hist <- if (is.null(history)) numeric(0) else as.numeric(history)
+  n_hist <- length(hist)
+  lags <- if (n_hist >= p) {
+    rev(hist[(n_hist - p + 1L):n_hist])   # [X_{t-1}, X_{t-2}, ..., X_{t-p}]
+  } else {
+    c(rev(hist), rep(object@x0, p - n_hist))
+  }
+
+  cond_mean <- mu + sum(phi * lags)
+  stats::dnorm(x, mean = cond_mean, sd = sigma)
 })
 
 # ---- likelihood increment methods ----
