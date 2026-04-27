@@ -93,6 +93,25 @@ setClass(
   )
 )
 
+# Class: VARpModel
+# purpose: Gaussian VAR(p) model for K correlated autoregressive streams;
+#          pre and post regimes share Phi and Sigma by default — the primary
+#          use-case is detecting a shift in the long-run mean vector.
+# slots:
+#   Phi_pre, Phi_post   = list of p matrices, each K-by-K (lag-1 ... lag-p coefficients)
+#   Sigma_pre, Sigma_post = K-by-K innovation covariance matrices
+#   mean_pre, mean_post   = length-K long-run mean vectors
+#   x0                    = length-K vector used as initial lags when history is too short
+setClass(
+  "VARpModel",
+  contains = "MultivariateModel",
+  slots = c(
+    Phi_pre   = "list",   Sigma_pre  = "matrix", mean_pre  = "numeric",
+    Phi_post  = "list",   Sigma_post = "matrix", mean_post = "numeric",
+    x0        = "numeric"
+  )
+)
+
 # ---- helper functions ----
 
 # helper: identify scalar numeric model specifications
@@ -131,6 +150,36 @@ setClass(
 # helper: convert AR intercept mu to long-run mean
 .ar_mean_from_intercept <- function(mu, phi) {
   mu / (1 - sum(phi))
+}
+
+# helper: check VAR(p) stationarity via companion matrix eigenvalues
+# A VAR(p) is stationary iff all eigenvalues of its Kp-by-Kp companion matrix
+# lie strictly inside the complex unit circle.
+.var_is_stationary <- function(Phi_list) {
+  p <- length(Phi_list)
+  if (p == 0L) return(TRUE)
+  K <- nrow(Phi_list[[1]])
+  # Build Kp-by-Kp companion matrix
+  top  <- do.call(cbind, Phi_list)          # K-by-Kp block [Phi_1 | Phi_2 | ... | Phi_p]
+  if (p > 1L) {
+    eye  <- diag(K * (p - 1L))
+    zero <- matrix(0, nrow = K * (p - 1L), ncol = K)
+    bot  <- cbind(eye, zero)
+    comp <- rbind(top, bot)
+  } else {
+    comp <- top
+  }
+  eigs <- eigen(comp, only.values = TRUE)$values
+  all(Mod(eigs) < 1 - 1e-8)
+}
+
+# helper: VAR(p) intercept vector from long-run mean
+# E[X_t] = m  =>  nu = (I - Phi_1 - ... - Phi_p) %*% m
+.var_intercept_from_mean <- function(m, Phi_list) {
+  K <- length(m)
+  I_K <- diag(K)
+  A <- I_K - Reduce("+", Phi_list)
+  as.numeric(A %*% m)
 }
 
 # helper: project vector v into a K-by-2 box
@@ -703,6 +752,60 @@ ARpModel <- function(phi_pre, sigma_pre, mean_pre = 0,
   )
 }
 
+# Constructor: VARpModel
+# inputs:
+#   Phi_pre, Phi_post     = list of p K-by-K coefficient matrices (lag 1 ... lag p);
+#                           defaults to Phi_post = Phi_pre (shared dynamics)
+#   Sigma_pre, Sigma_post = K-by-K innovation covariance matrices;
+#                           defaults to Sigma_post = Sigma_pre
+#   mean_pre, mean_post   = length-K long-run mean vectors
+#   x0                    = length-K initialisation vector for lags before history starts
+#   name                  = model label
+# outputs:
+#   VARpModel object
+VARpModel <- function(Phi_pre, Sigma_pre, mean_pre,
+                      mean_post,
+                      Phi_post  = Phi_pre,
+                      Sigma_post = Sigma_pre,
+                      x0   = NULL,
+                      name = "varp") {
+  # Coerce Phi arguments: a bare matrix is treated as order-1 (single-element list)
+  if (is.matrix(Phi_pre))  Phi_pre  <- list(Phi_pre)
+  if (is.matrix(Phi_post)) Phi_post <- list(Phi_post)
+
+  K <- nrow(Phi_pre[[1]])
+  stopifnot(
+    is.list(Phi_pre), is.list(Phi_post),
+    length(Phi_pre) >= 1L, length(Phi_post) >= 1L,
+    all(sapply(Phi_pre,  function(A) is.matrix(A) && nrow(A) == K && ncol(A) == K)),
+    all(sapply(Phi_post, function(A) is.matrix(A) && nrow(A) == K && ncol(A) == K)),
+    is.matrix(Sigma_pre),  nrow(Sigma_pre)  == K, ncol(Sigma_pre)  == K,
+    is.matrix(Sigma_post), nrow(Sigma_post) == K, ncol(Sigma_post) == K,
+    length(mean_pre)  == K,
+    length(mean_post) == K
+  )
+  if (!.var_is_stationary(Phi_pre)) {
+    stop("Pre-change VAR model is not stationary: all companion-matrix eigenvalues must lie strictly inside the unit circle.", call. = FALSE)
+  }
+  if (!.var_is_stationary(Phi_post)) {
+    stop("Post-change VAR model is not stationary: all companion-matrix eigenvalues must lie strictly inside the unit circle.", call. = FALSE)
+  }
+  if (is.null(x0)) x0 <- rep(0, K)
+  stopifnot(length(x0) == K)
+
+  new(
+    "VARpModel",
+    name       = name,
+    Phi_pre    = Phi_pre,
+    Sigma_pre  = Sigma_pre,
+    mean_pre   = as.numeric(mean_pre),
+    Phi_post   = Phi_post,
+    Sigma_post = Sigma_post,
+    mean_post  = as.numeric(mean_post),
+    x0         = as.numeric(x0)
+  )
+}
+
 # ---- density methods ----
 
 # Method: model_density for GaussianModel
@@ -813,6 +916,46 @@ setMethod("model_density", "ARpModel", function(object, x, regime = c("pre", "po
 
   cond_mean <- mu + sum(phi * lags)
   stats::dnorm(x, mean = cond_mean, sd = sigma)
+})
+
+# Method: model_density for VARpModel
+# inputs:
+#   object  = VARpModel
+#   x       = length-K numeric vector (single observation)
+#   regime  = "pre" or "post"
+#   history = numeric N_hist-by-K matrix of past observations (most recent in last row);
+#             rows shorter than order p are padded with x0
+# outputs:
+#   numeric scalar multivariate Gaussian conditional density
+setMethod("model_density", "VARpModel", function(object, x, regime = c("pre", "post"), history = NULL) {
+  regime <- match.arg(regime)
+  Phi   <- if (regime == "pre") object@Phi_pre  else object@Phi_post
+  Sigma <- if (regime == "pre") object@Sigma_pre else object@Sigma_post
+  m     <- if (regime == "pre") object@mean_pre  else object@mean_post
+  p     <- length(Phi)
+  K     <- length(m)
+
+  # Intercept vector: nu = (I - Phi_1 - ... - Phi_p) m
+  nu <- .var_intercept_from_mean(m, Phi)
+
+  # Build matrix of p lag rows, padding with x0 when history is too short
+  if (is.null(history) || nrow(history) == 0L) {
+    lag_mat <- matrix(rep(object@x0, p), nrow = p, ncol = K, byrow = TRUE)
+  } else {
+    n_hist <- nrow(history)
+    if (n_hist >= p) {
+      lag_mat <- history[(n_hist - p + 1L):n_hist, , drop = FALSE]
+      lag_mat <- lag_mat[p:1, , drop = FALSE]   # reverse: row 1 = lag 1, row p = lag p
+    } else {
+      pad     <- matrix(rep(object@x0, p - n_hist), nrow = p - n_hist, ncol = K, byrow = TRUE)
+      lag_mat <- rbind(history[n_hist:1, , drop = FALSE], pad)  # row 1 = most recent
+    }
+  }
+
+  # Conditional mean: nu + Phi_1 X_{t-1} + ... + Phi_p X_{t-p}
+  cond_mean <- nu + Reduce("+", lapply(seq_len(p), function(l) as.numeric(Phi[[l]] %*% lag_mat[l, ])))
+
+  exp(.mv_log_density(x, mean = cond_mean, Sigma = Sigma))
 })
 
 # ---- likelihood increment methods ----
