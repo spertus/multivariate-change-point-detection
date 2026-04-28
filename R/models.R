@@ -174,7 +174,7 @@ setClass(
 }
 
 # helper: VAR(p) intercept vector from long-run mean
-# E[X_t] = m  =>  nu = (I - Phi_1 - ... - Phi_p) %*% m
+# E[X_t] = m  =>  c = (I - Phi_1 - ... - Phi_p) %*% m
 .var_intercept_from_mean <- function(m, Phi_list) {
   K <- length(m)
   I_K <- diag(K)
@@ -936,7 +936,7 @@ setMethod("model_density", "VARpModel", function(object, x, regime = c("pre", "p
   K     <- length(m)
 
   # Intercept vector: nu = (I - Phi_1 - ... - Phi_p) m
-  nu <- .var_intercept_from_mean(m, Phi)
+  c_vec <- .var_intercept_from_mean(m, Phi)
 
   # Build matrix of p lag rows, padding with x0 when history is too short
   if (is.null(history) || nrow(history) == 0L) {
@@ -953,7 +953,7 @@ setMethod("model_density", "VARpModel", function(object, x, regime = c("pre", "p
   }
 
   # Conditional mean: nu + Phi_1 X_{t-1} + ... + Phi_p X_{t-p}
-  cond_mean <- nu + Reduce("+", lapply(seq_len(p), function(l) as.numeric(Phi[[l]] %*% lag_mat[l, ])))
+  cond_mean <- c_vec + Reduce("+", lapply(seq_len(p), function(l) as.numeric(Phi[[l]] %*% lag_mat[l, ])))
 
   exp(.mv_log_density(x, mean = cond_mean, Sigma = Sigma))
 })

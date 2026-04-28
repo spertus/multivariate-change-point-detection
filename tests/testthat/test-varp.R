@@ -92,8 +92,8 @@ test_that("model_density peaks at conditional mean", {
                     mean_pre = c(0, 0), mean_post = c(3, 3))
   hist <- matrix(c(1, 2), nrow = 1)  # one row = one lag
   # conditional mean = nu + Phi1 %*% [1, 2]
-  nu   <- as.numeric((diag(K) - Phi1) %*% c(0, 0))   # = 0
-  cm   <- as.numeric(nu + Phi1 %*% c(1, 2))           # = [0.4, 0.6]
+  c_vec <- as.numeric((diag(K) - Phi1) %*% c(0, 0))   # = 0
+  cm    <- as.numeric(c_vec + Phi1 %*% c(1, 2))       # = [0.4, 0.6]
   d_cm  <- model_density(m, x = cm,       regime = "pre", history = hist)
   d_off <- model_density(m, x = cm + 2,   regime = "pre", history = hist)
   expect_gt(d_cm, d_off)
@@ -106,9 +106,9 @@ test_that("model_density uses x0 when history is empty", {
   Sig  <- diag(K)
   m    <- VARpModel(Phi_pre = Phi1, Sigma_pre = Sig,
                     mean_pre = c(0, 0), mean_post = c(1, 1), x0 = x0)
-  nu     <- as.numeric((diag(K) - Phi1) %*% c(0, 0))   # 0
-  cm_x0  <- as.numeric(nu + Phi1 %*% x0)               # 0.4 * [5,5] = [2, 2]
-  cm_zero <- as.numeric(nu + Phi1 %*% c(0, 0))          # [0, 0]
+  c_vec   <- as.numeric((diag(K) - Phi1) %*% c(0, 0))   # 0
+  cm_x0   <- as.numeric(c_vec + Phi1 %*% x0)            # 0.4 * [5,5] = [2, 2]
+  cm_zero <- as.numeric(c_vec + Phi1 %*% c(0, 0))       # [0, 0]
   d_x0   <- model_density(m, x = cm_x0,  regime = "pre", history = NULL)
   d_zero <- model_density(m, x = cm_zero, regime = "pre", history = NULL)
   expect_gt(d_x0, d_zero)
@@ -131,7 +131,7 @@ test_that("model_density: long-run mean recovered at stationarity", {
   m_val <- c(2, 3)
   m    <- VARpModel(Phi_pre = Phi1, Sigma_pre = diag(K),
                     mean_pre = m_val, mean_post = m_val)
-  # When all lags = m, cond mean = nu + Phi*m = (I-Phi)m + Phi*m = m
+  # When all lags = m, cond mean = c + Phi*m = (I-Phi)m + Phi*m = m
   hist  <- matrix(rep(m_val, 5), nrow = 5, byrow = TRUE)
   d_cm  <- model_density(m, x = m_val,     regime = "pre", history = hist)
   d_off <- model_density(m, x = m_val + 1, regime = "pre", history = hist)
@@ -149,8 +149,8 @@ test_that("VAR(2): model_density uses both lags correctly", {
   hist <- matrix(c(1, 1,   # lag-2 row (older)
                    2, 2),  # lag-1 row (more recent)
                  nrow = 2, byrow = TRUE)
-  nu   <- rep(0, K)
-  cm   <- nu + as.numeric(Phi1 %*% c(2, 2)) + as.numeric(Phi2 %*% c(1, 1))
+  c_vec <- rep(0, K)
+  cm    <- c_vec + as.numeric(Phi1 %*% c(2, 2)) + as.numeric(Phi2 %*% c(1, 1))
   d_cm  <- model_density(m, x = cm,     regime = "pre", history = hist)
   d_off <- model_density(m, x = cm + 2, regime = "pre", history = hist)
   expect_gt(d_cm, d_off)
