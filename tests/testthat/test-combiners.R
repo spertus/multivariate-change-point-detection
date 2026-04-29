@@ -31,12 +31,99 @@ test_that("product/average combiners support log-increment mode", {
   expect_equal(zal, log(za), tolerance = 1e-10)
 })
 
-test_that("universal portfolio combiner is positive", {
+test_that("sparse UP (default) is positive", {
   s1 <- runif(20, 0.9, 1.3)
   s2 <- runif(20, 0.9, 1.3)
-  up <- UniversalPortfolioCombiner(resolution = 4)
-  z <- combine_streams(up, cbind(s1, s2))
+  up <- UniversalPortfolioCombiner()          # sparse, K+1 portfolios
+  z  <- combine_streams(up, cbind(s1, s2))
   expect_true(all(z > 0))
+})
+
+test_that("dense UP is positive", {
+  s1 <- runif(20, 0.9, 1.3)
+  s2 <- runif(20, 0.9, 1.3)
+  up <- UniversalPortfolioCombiner(mode = "dense", resolution = 4)
+  z  <- combine_streams(up, cbind(s1, s2))
+  expect_true(all(z > 0))
+})
+
+# ---- sparse UP structural properties ----------------------------------------
+
+test_that("sparse UP: first step equals simple average for K=2", {
+  # With K=2 and equal initial wealth across 3 portfolios {1,0},{0,1},{0.5,0.5},
+  # the first combined increment = ((s1 + s2 + (s1+s2)/2)) / 3 = (s1+s2)/2.
+  s1 <- 1.5; s2 <- 0.8
+  up <- UniversalPortfolioCombiner()
+  z  <- combine_streams(up, matrix(c(s1, s2), nrow = 1))
+  expect_equal(z, (s1 + s2) / 2, tolerance = 1e-12)
+})
+
+test_that("sparse UP: first step equals simple average for K=3", {
+  # With K=3, portfolios {1,0,0},{0,1,0},{0,0,1},{1/3,1/3,1/3} (equal wealth):
+  # combined = (s1 + s2 + s3 + (s1+s2+s3)/3) / 4 = (s1+s2+s3)/3 = simple avg.
+  s <- c(2.0, 0.5, 1.2)
+  up <- UniversalPortfolioCombiner()
+  z  <- combine_streams(up, matrix(s, nrow = 1))
+  expect_equal(z, mean(s), tolerance = 1e-12)
+})
+
+test_that("sparse UP: adapts toward better stream over many steps", {
+  set.seed(5)
+  N  <- 200
+  # stream 2 consistently doubles; stream 1 stays near 1
+  s1 <- runif(N, 0.9, 1.1)
+  s2 <- runif(N, 1.8, 2.2)
+  up <- UniversalPortfolioCombiner()
+  z  <- combine_streams(up, cbind(s1, s2))
+  # At t=1, z equals the average (equi-weighted mix).
+  # After adaptation toward s2, late z/s2 should exceed early z/s2.
+  early_ratio <- mean(z[1:5]    / s2[1:5])     # z starts at avg < s2
+  late_ratio  <- mean(z[150:N]  / s2[150:N])   # z converges toward s2
+  expect_gt(late_ratio, early_ratio)
+})
+
+test_that("sparse UP log/non-log modes agree", {
+  set.seed(3)
+  streams     <- matrix(runif(40, 0.7, 1.4), 20, 2)
+  log_streams <- log(streams)
+  up  <- UniversalPortfolioCombiner()
+  z   <- combine_streams(up, streams,     log = FALSE)
+  zl  <- combine_streams(up, log_streams, log = TRUE)
+  expect_equal(zl, log(z), tolerance = 1e-10)
+})
+
+# ---- dense UP ---------------------------------------------------------------
+
+test_that("dense UP: errors when grid exceeds 50 000 portfolios", {
+  # K=50, resolution=4 => choose(53, 49) = choose(53,4) = 292 825 > 50 000
+  up <- UniversalPortfolioCombiner(mode = "dense", resolution = 4)
+  streams <- matrix(runif(10 * 50), 10, 50)
+  expect_error(combine_streams(up, streams), "50 000")
+})
+
+test_that("dense UP log/non-log modes agree", {
+  set.seed(8)
+  streams     <- matrix(runif(30 * 3, 0.8, 1.3), 30, 3)
+  log_streams <- log(streams)
+  up  <- UniversalPortfolioCombiner(mode = "dense", resolution = 4)
+  z   <- combine_streams(up, streams,     log = FALSE)
+  zl  <- combine_streams(up, log_streams, log = TRUE)
+  expect_equal(zl, log(z), tolerance = 1e-10)
+})
+
+test_that("dense UP tracks the best portfolio at least as well as simple avg", {
+  set.seed(11)
+  N  <- 50
+  # stream 1 dominates; best single-stream portfolio = {1, 0}
+  s1 <- runif(N, 1.4, 1.8)
+  s2 <- runif(N, 0.7, 1.0)
+  streams <- cbind(s1, s2)
+  up_dense <- UniversalPortfolioCombiner(mode = "dense", resolution = 4)
+  avg      <- AverageCombiner()
+  zd <- combine_streams(up_dense, streams)
+  za <- combine_streams(avg,      streams)
+  # UP wealth must exceed average wealth (UP contains the average portfolio)
+  expect_gte(prod(zd), prod(za) * 0.99)
 })
 
 # ---- offline stream (leading NA) tests ----------------------------------------
@@ -128,7 +215,7 @@ test_that("AverageCombiner: log and non-log modes agree with offline streams", {
 
 test_that("UniversalPortfolioCombiner: NA-free output with offline stream", {
   streams <- make_offline_streams(20, onset = 5)
-  up <- UniversalPortfolioCombiner(resolution = 4)
+  up <- UniversalPortfolioCombiner(mode = "dense", resolution = 4)
   out <- combine_streams(up, streams, log = TRUE)
 
   expect_equal(length(out), 20L)
@@ -140,7 +227,7 @@ test_that("UniversalPortfolioCombiner: log and non-log modes agree with offline 
   streams_nat <- exp(streams_log)
   streams_nat[1:5, 2] <- NA
 
-  up <- UniversalPortfolioCombiner(resolution = 4)
+  up <- UniversalPortfolioCombiner(mode = "dense", resolution = 4)
   out_log <- combine_streams(up, streams_log, log = TRUE)
   out_nat <- combine_streams(up, streams_nat, log = FALSE)
 
@@ -163,7 +250,7 @@ test_that("combined TSM with offline stream is non-negative (Ville validity chec
   streams <- cbind(inc1, inc2)
 
   for (Combiner in list(ProductCombiner(), AverageCombiner(),
-                        UniversalPortfolioCombiner(resolution = 4))) {
+                        UniversalPortfolioCombiner(mode = "dense", resolution = 4))) {
     combined <- combine_streams(Combiner, streams, log = TRUE)
     expect_false(anyNA(combined))
     expect_true(all(is.finite(combined)))
@@ -198,7 +285,7 @@ test_that("product beats universal portfolio beats average", {
 
   p <- ProductCombiner()
   a <- AverageCombiner()
-  up <- UniversalPortfolioCombiner(resolution = 4)
+  up <- UniversalPortfolioCombiner(mode = "dense", resolution = 4)
   z_p <- combine_streams(p, cbind(s1, s2, s3))
   z_a <- combine_streams(a, cbind(s1, s2, s3))
   z_up <- combine_streams(up, cbind(s1, s2, s3))

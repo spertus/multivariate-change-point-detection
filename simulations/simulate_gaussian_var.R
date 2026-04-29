@@ -181,7 +181,7 @@ AR_COEFS <- list(
     comb <- switch(combiner_name,
       average             = AverageCombiner(),
       product             = ProductCombiner(),
-      universal_portfolio = UniversalPortfolioCombiner()
+      universal_portfolio = UniversalPortfolioCombiner(mode = "sparse")
     )
     inc_vec <- combine_streams(comb, log_inc_or_matrix, log = TRUE)
   }

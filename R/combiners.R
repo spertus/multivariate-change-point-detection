@@ -15,9 +15,11 @@ setClass("AverageCombiner", contains = "Combiner")
 # Class: UniversalPortfolioCombiner
 # purpose: dependence-robust combiner via discrete universal portfolio mixing
 # slots:
-#   resolution = numeric scalar grid resolution on simplex
-#   max_points = numeric scalar cap on number of grid portfolios
-setClass("UniversalPortfolioCombiner", contains = "Combiner", slots = c(resolution = "numeric", max_points = "numeric"))
+#   mode       = "sparse" (K+1 portfolios: K unit vectors + uniform average) or
+#                "dense"  (full simplex discretization at given resolution)
+#   resolution = positive integer; simplex step count used only in dense mode
+setClass("UniversalPortfolioCombiner", contains = "Combiner",
+         slots = c(mode = "character", resolution = "numeric"))
 
 # Constructor: ProductCombiner
 # inputs:
@@ -39,14 +41,24 @@ AverageCombiner <- function(name = "average") {
 
 # Constructor: UniversalPortfolioCombiner
 # inputs:
-#   resolution = positive numeric scalar controlling simplex discretization
-#   max_points = positive numeric scalar limiting portfolio count
+#   mode       = "sparse" (default) or "dense"
+#                "sparse": K+1 portfolios — the K unit vectors plus the uniform
+#                          average {1/K,...,1/K}; O(K) portfolios, always cheap.
+#                "dense":  full simplex discretization with `resolution` equally-
+#                          spaced steps; choose(K-1+resolution, K-1) portfolios.
+#                          Errors if that count exceeds 50 000.
+#   resolution = positive integer controlling step count in dense mode (ignored
+#                in sparse mode).  Default 4 gives 5 values per axis
+#                {0, 0.25, 0.5, 0.75, 1}.
 #   name       = character label
 # outputs:
 #   UniversalPortfolioCombiner object
-UniversalPortfolioCombiner <- function(resolution = 6, max_points = 300, name = "universal-portfolio") {
-  stopifnot(resolution >= 1, max_points >= 1)
-  new("UniversalPortfolioCombiner", name = name, resolution = resolution, max_points = max_points)
+UniversalPortfolioCombiner <- function(mode = "sparse", resolution = 4,
+                                       name = "universal-portfolio") {
+  stopifnot(mode %in% c("sparse", "dense"))
+  stopifnot(resolution >= 1)
+  new("UniversalPortfolioCombiner", name = name, mode = mode,
+      resolution = as.numeric(resolution))
 }
 
 # Method: combine_streams for ProductCombiner
@@ -123,63 +135,74 @@ setMethod("combine_streams", "AverageCombiner", function(object, streams, weight
 #   object  = UniversalPortfolioCombiner object
 #   streams = numeric N-by-K matrix of marginal increment sequences
 #   weights = currently unused (reserved for future extension)
-#   log     = logical; if TRUE combine log-increments and return log-increments
+#   log     = logical; if TRUE combine log-increments, return log-increments
 # outputs:
-#   numeric length-N vector, mixed-portfolio one-step increments (or log-increments)
-setMethod("combine_streams", "UniversalPortfolioCombiner", function(object, streams, weights = NULL, log = FALSE) {
+#   numeric length-N vector of mixed-portfolio increments (or log-increments)
+#
+# Portfolio grid:
+#   sparse mode: K+1 rows — diag(K) (unit vectors) + rep(1/K, K) (uniform)
+#   dense  mode: full simplex discretization via .composition_grid();
+#                errors if choose(K-1+resolution, K-1) > 50 000
+setMethod("combine_streams", "UniversalPortfolioCombiner",
+          function(object, streams, weights = NULL, log = FALSE) {
   if (!is.matrix(streams) || !is.numeric(streams)) {
-    stop("`streams` must be a numeric matrix of marginal increment sequences.", call. = FALSE)
+    stop("`streams` must be a numeric matrix.", call. = FALSE)
   }
 
   n <- nrow(streams)
   k <- ncol(streams)
-  raw_grid <- .composition_grid(k, as.integer(object@resolution))
-  grid <- raw_grid / object@resolution
 
-  if (nrow(grid) > object@max_points) {
-    idx <- unique(round(seq(1, nrow(grid), length.out = object@max_points)))
-    grid <- grid[idx, , drop = FALSE]
-  }
-
-  if (k > 1L) {
-    baseline <- rbind(diag(k), rep(1 / k, k))
-    grid <- unique(rbind(grid, baseline))
+  if (object@mode == "sparse") {
+    # K unit-vector portfolios + uniform average: exactly K+1 rows
+    grid <- rbind(diag(k), matrix(rep(1 / k, k), nrow = 1L))
+  } else {
+    # dense: full simplex discretization
+    res <- as.integer(object@resolution)
+    n_portfolios <- choose(k - 1L + res, k - 1L)
+    if (n_portfolios > 50000L) {
+      stop(sprintf(
+        paste0("Dense UP grid has %d portfolios (> 50 000). ",
+               "Reduce `resolution` or K, or use mode = \"sparse\"."),
+        n_portfolios), call. = FALSE)
+    }
+    raw_grid <- .composition_grid(k, res)
+    grid     <- raw_grid / res
+    # ensure unit vectors and uniform average are always included
+    if (k > 1L) {
+      baseline <- rbind(diag(k), matrix(rep(1 / k, k), nrow = 1L))
+      grid <- unique(rbind(grid, baseline))
+    }
   }
 
   m <- nrow(grid)
 
   if (!log) {
-    wealth <- rep(1, m)
+    wealth       <- rep(1, m)
     combined_inc <- numeric(n)
-
     for (t in seq_len(n)) {
-      # Offline streams (NA) contribute factor 1; substitute 0 in natural-scale means 1 only
-      # in log-space, so substitute 1 directly here.
       row_t <- streams[t, ]
-      row_t[is.na(row_t)] <- 1
-      gross <- pmax(as.vector(grid %*% row_t), .Machine$double.eps)
+      row_t[is.na(row_t)] <- 1   # offline stream contributes factor 1
+      gross           <- pmax(as.vector(grid %*% row_t), .Machine$double.eps)
       combined_inc[t] <- sum(wealth * gross) / sum(wealth)
-      wealth <- wealth * gross
+      wealth          <- wealth * gross
     }
-
     return(combined_inc)
   }
 
-  log_grid <- log(grid)
-  log_wealth <- rep(0, m)
+  # log-scale path
+  log_grid        <- log(grid)
+  log_wealth      <- rep(0, m)
   combined_log_inc <- numeric(n)
-
   for (t in seq_len(n)) {
-    # Offline streams (NA) contribute 0 in log-space (factor 1); substitute before arithmetic.
     row_t <- streams[t, ]
-    row_t[is.na(row_t)] <- 0
+    row_t[is.na(row_t)] <- 0   # offline stream contributes 0 in log-space
     log_gross <- numeric(m)
     for (i in seq_len(m)) {
       log_gross[i] <- .logsumexp(log_grid[i, ] + row_t)
     }
-    combined_log_inc[t] <- .logsumexp(log_wealth + log_gross) - .logsumexp(log_wealth)
+    combined_log_inc[t] <-
+      .logsumexp(log_wealth + log_gross) - .logsumexp(log_wealth)
     log_wealth <- log_wealth + log_gross
   }
-
   combined_log_inc
 })
