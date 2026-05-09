@@ -182,7 +182,7 @@ setMethod("combine_streams", "UniversalPortfolioCombiner",
     for (t in seq_len(n)) {
       row_t <- streams[t, ]
       row_t[is.na(row_t)] <- 1   # offline stream contributes factor 1
-      gross           <- pmax(as.vector(grid %*% row_t), .Machine$double.eps)
+      gross           <- pmax(as.vector(grid %*% row_t), .Machine$double.eps) # Reimann approximation of UP wealth 
       combined_inc[t] <- sum(wealth * gross) / sum(wealth)
       wealth          <- wealth * gross
     }

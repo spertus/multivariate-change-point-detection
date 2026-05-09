@@ -6,7 +6,7 @@
 setClass("TestSupermartingale", slots = c(model = "Model", initial = "numeric"))
 
 # Class: TSM
-# purpose: generic TSM class that can be used with simple or composite models
+# purpose: generic TSM class built from a GaussianVAR, BernoulliModel, or any Model subclass
 setClass("TSM", contains = "TestSupermartingale")
 
 # Backward-compatible alias class
@@ -24,68 +24,57 @@ TSM <- function(model, initial = 1) {
 }
 
 # Backward-compatible constructor alias
-SimpleVsSimpleTSM <- function(model, initial = 1) {
-  TSM(model = model, initial = initial)
-}
+SimpleVsSimpleTSM <- function(model, initial = 1) TSM(model = model, initial = initial)
+
+# Class: ConformalTSM (placeholder — not yet implemented)
+# purpose: placeholder for conformal martingale evidence processes
+setClass("ConformalTSM",
+         slots = c(calibration = "numeric", score_fn = "function", initial = "numeric"))
+
+ConformalTSM <- function(...) stop("ConformalTSM is not yet implemented.", call. = FALSE)
 
 # Method: compute_increments for TSM
 # inputs:
 #   object = TSM object
-#   x      = numeric vector (univariate stream) or matrix n-by-K (multivariate stream)
+#   x      = numeric vector (univariate stream) or numeric N-by-K matrix (multivariate stream)
 #   log    = logical; if TRUE return log-increments
 # outputs:
 #   numeric length-N vector with one-step increments (or log-increments)
 setMethod("compute_increments", "TSM", function(object, x, log = FALSE) {
   if (is.null(dim(x))) {
     .assert_numeric_vector(as.numeric(x), "x")
-    x <- as.numeric(x)
-
-    has_na <- anyNA(x)
-
-    # Fast path: univariate Gaussian mixture post-change (only when no NAs).
-    if (!has_na &&
-        is(object@model, "GaussianModel") &&
-        .is_interval_spec(object@model@mean_post) &&
-        object@model@method == "mixture") {
-      return(.gaussian_mix_increments_fast(object@model, x, log = log))
-    }
-
-    n <- length(x)
-    out <- rep(NA_real_, n)
+    x       <- as.numeric(x)
+    n       <- length(x)
+    out     <- rep(NA_real_, n)
     history <- numeric(0)
 
     for (t in seq_len(n)) {
-      if (is.na(x[t])) next          # offline: out[t] stays NA; history unchanged
-      out[t] <- likelihood_increment(object@model, x = x[t], history = history, log = log)
+      if (is.na(x[t])) next   # offline: out[t] stays NA; history unchanged
+      out[t]  <- likelihood_increment(object@model, x = x[t], history = history, log = log)
       history <- c(history, x[t])
     }
     return(out)
   }
 
-  if (!is.matrix(x) || !is.numeric(x)) {
+  if (!is.matrix(x) || !is.numeric(x))
     stop("`x` must be a numeric vector or matrix.", call. = FALSE)
-  }
-  if (!is(object@model, "MultivariateModel")) {
+  if (!is(object@model, "MultivariateModel"))
     stop("Matrix input requires a model inheriting from `MultivariateModel`.", call. = FALSE)
-  }
 
-  # Fast path: multivariate Gaussian mixture post-change.
-  if (is(object@model, "MultivariateGaussianModel") &&
-      .is_matrix_box_spec(object@model@mu_post) &&
-      object@model@method == "mixture") {
-    return(.mv_gaussian_mix_increments_fast(object@model, x, log = log))
-  }
-
-  n <- nrow(x)
-  out <- numeric(n)
+  n       <- nrow(x)
+  out     <- numeric(n)
   history <- matrix(numeric(0), nrow = 0, ncol = ncol(x))
 
   for (t in seq_len(n)) {
-    out[t] <- likelihood_increment(object@model, x = x[t, ], history = history, log = log)
+    out[t]  <- likelihood_increment(object@model, x = x[t, ], history = history, log = log)
     history <- rbind(history, x[t, , drop = FALSE])
   }
-  
   out
+})
+
+# Method: compute_increments for ConformalTSM (not yet implemented)
+setMethod("compute_increments", "ConformalTSM", function(object, x, log = FALSE) {
+  stop("ConformalTSM is not yet implemented.", call. = FALSE)
 })
 
 # Helper: increments_to_tsm
@@ -99,19 +88,12 @@ setMethod("compute_increments", "TSM", function(object, x, log = FALSE) {
 #   numeric length-N vector with cumulative path
 increments_to_tsm <- function(increments, initial = 1, running_max = FALSE, log = FALSE) {
   .assert_numeric_vector(increments, "increments")
-  if(!log && any(increments < 0)){stop("increments are negative but log is FALSE!")}
-  if(log && !any(increments < 0)){warning("log is TRUE but no increments are negative; did you pass log-increments?")}
-  if (length(initial) != 1L || !is.finite(initial) || initial <= 0) {
+  if (!log && any(increments < 0)) stop("increments are negative but log is FALSE!")
+  if (log && !any(increments < 0)) warning("log is TRUE but no increments are negative; did you pass log-increments?")
+  if (length(initial) != 1L || !is.finite(initial) || initial <= 0)
     stop("`initial` must be a positive finite scalar.", call. = FALSE)
-  }
-  if (log) {
-    path <- log(initial) + cumsum(increments)
-  } else {
-    path <- initial * cumprod(pmax(increments, .Machine$double.eps))
-  }
-  if (isTRUE(running_max)) {
-    return(cummax(path))
-  }
+  path <- if (log) log(initial) + cumsum(increments) else initial * cumprod(pmax(increments, .Machine$double.eps))
+  if (isTRUE(running_max)) return(cummax(path))
   path
 }
 
