@@ -1,72 +1,72 @@
-## test-varp.R  — unit tests for GaussianVAR
+## test-varp.R  — unit tests for GaussianVARModel
 
 # ---- constructor -----------------------------------------------------------
 
-test_that("GaussianVAR constructs with default shared Phi and Sigma", {
+test_that("GaussianVARModel constructs with default shared Phi and Sigma", {
   K <- 2
   Phi1 <- matrix(c(0.4, 0.1, 0.1, 0.3), K, K)
   Sig  <- diag(K)
-  m <- GaussianVAR(Phi_pre = Phi1, Sigma_pre = Sig,
+  m <- GaussianVARModel(Phi_pre = Phi1, Sigma_pre = Sig,
                    mean_pre = c(0, 0), mean_post = c(1, 1))
-  expect_s4_class(m, "GaussianVAR")
+  expect_s4_class(m, "GaussianVARModel")
   expect_equal(m@Phi_post,   list(Phi1))
   expect_equal(m@Sigma_post, Sig)
   expect_equal(m@mean_pre,   c(0, 0))
   expect_equal(m@mean_post,  c(1, 1))
 })
 
-test_that("GaussianVAR accepts a bare matrix as order-1 Phi", {
+test_that("GaussianVARModel accepts a bare matrix as order-1 Phi", {
   K   <- 3
   Phi <- 0.3 * diag(K)
-  m   <- GaussianVAR(Phi_pre = Phi, Sigma_pre = diag(K),
+  m   <- GaussianVARModel(Phi_pre = Phi, Sigma_pre = diag(K),
                      mean_pre = rep(0, K), mean_post = rep(2, K))
   expect_length(m@Phi_pre, 1L)
   expect_equal(m@Phi_pre[[1]], Phi)
 })
 
-test_that("GaussianVAR accepts order-2 Phi as a list", {
+test_that("GaussianVARModel accepts order-2 Phi as a list", {
   K    <- 2
   Phi1 <- 0.3 * diag(K)
   Phi2 <- 0.1 * diag(K)
-  m    <- GaussianVAR(Phi_pre = list(Phi1, Phi2), Sigma_pre = diag(K),
+  m    <- GaussianVARModel(Phi_pre = list(Phi1, Phi2), Sigma_pre = diag(K),
                       mean_pre = c(0, 0), mean_post = c(1, 0))
   expect_length(m@Phi_pre, 2L)
 })
 
-test_that("GaussianVAR rejects non-stationary pre-change model", {
+test_that("GaussianVARModel rejects non-stationary pre-change model", {
   K    <- 2
   Phi1 <- diag(c(1.0, 0.3), K)
   expect_error(
-    GaussianVAR(Phi_pre = Phi1, Sigma_pre = diag(K),
+    GaussianVARModel(Phi_pre = Phi1, Sigma_pre = diag(K),
                 mean_pre = c(0, 0), mean_post = c(1, 1)),
     "Pre-change VAR model is not stationary"
   )
 })
 
-test_that("GaussianVAR rejects non-stationary post-change model", {
+test_that("GaussianVARModel rejects non-stationary post-change model", {
   K       <- 2
   Phi_ok  <- 0.3 * diag(K)
   Phi_bad <- diag(c(0.5, 1.1), K)
   expect_error(
-    GaussianVAR(Phi_pre = Phi_ok, Sigma_pre = diag(K),
+    GaussianVARModel(Phi_pre = Phi_ok, Sigma_pre = diag(K),
                 Phi_post = Phi_bad, Sigma_post = diag(K),
                 mean_pre = c(0, 0), mean_post = c(1, 1)),
     "Post-change VAR model is not stationary"
   )
 })
 
-test_that("GaussianVAR rejects mismatched K in Phi and mean", {
+test_that("GaussianVARModel rejects mismatched K in Phi and mean", {
   K   <- 2
   Phi <- 0.3 * diag(K)
   expect_error(
-    GaussianVAR(Phi_pre = Phi, Sigma_pre = diag(K),
+    GaussianVARModel(Phi_pre = Phi, Sigma_pre = diag(K),
                 mean_pre = c(0, 0, 0), mean_post = c(1, 1, 1))
   )
 })
 
-test_that("GaussianVAR x0 defaults to zero vector of length K", {
+test_that("GaussianVARModel x0 defaults to zero vector of length K", {
   K <- 3
-  m <- GaussianVAR(Phi_pre = 0.2 * diag(K), Sigma_pre = diag(K),
+  m <- GaussianVARModel(Phi_pre = 0.2 * diag(K), Sigma_pre = diag(K),
                    mean_pre = rep(0, K), mean_post = rep(1, K))
   expect_equal(m@x0, rep(0, K))
 })
@@ -76,7 +76,7 @@ test_that("GaussianVAR x0 defaults to zero vector of length K", {
 test_that("model_density returns positive scalar", {
   K    <- 2
   Phi1 <- 0.3 * diag(K)
-  m    <- GaussianVAR(Phi_pre = Phi1, Sigma_pre = diag(K),
+  m    <- GaussianVARModel(Phi_pre = Phi1, Sigma_pre = diag(K),
                       mean_pre = c(0, 0), mean_post = c(2, 2))
   d <- model_density(m, x = c(0, 0), regime = "pre", history = NULL)
   expect_length(d, 1L)
@@ -87,7 +87,7 @@ test_that("model_density peaks at conditional mean", {
   K    <- 2
   Phi1 <- matrix(c(0.4, 0.0, 0.0, 0.3), K, K)
   Sig  <- diag(K)
-  m    <- GaussianVAR(Phi_pre = Phi1, Sigma_pre = Sig,
+  m    <- GaussianVARModel(Phi_pre = Phi1, Sigma_pre = Sig,
                       mean_pre = c(0, 0), mean_post = c(3, 3))
   hist <- matrix(c(1, 2), nrow = 1)
   c_vec <- as.numeric((diag(K) - Phi1) %*% c(0, 0))   # = 0
@@ -102,7 +102,7 @@ test_that("model_density uses x0 when history is empty", {
   x0   <- c(5, 5)
   Phi1 <- 0.4 * diag(K)
   Sig  <- diag(K)
-  m    <- GaussianVAR(Phi_pre = Phi1, Sigma_pre = Sig,
+  m    <- GaussianVARModel(Phi_pre = Phi1, Sigma_pre = Sig,
                       mean_pre = c(0, 0), mean_post = c(1, 1), x0 = x0)
   c_vec   <- as.numeric((diag(K) - Phi1) %*% c(0, 0))
   cm_x0   <- as.numeric(c_vec + Phi1 %*% x0)
@@ -115,7 +115,7 @@ test_that("model_density uses x0 when history is empty", {
 test_that("model_density pre vs post differ when means differ", {
   K    <- 2
   Phi1 <- 0.3 * diag(K)
-  m    <- GaussianVAR(Phi_pre = Phi1, Sigma_pre = diag(K),
+  m    <- GaussianVARModel(Phi_pre = Phi1, Sigma_pre = diag(K),
                       mean_pre = c(0, 0), mean_post = c(4, 4))
   d_pre  <- model_density(m, x = c(4, 4), regime = "pre",  history = NULL)
   d_post <- model_density(m, x = c(4, 4), regime = "post", history = NULL)
@@ -126,7 +126,7 @@ test_that("model_density: long-run mean recovered at stationarity", {
   K    <- 2
   Phi1 <- 0.3 * diag(K)
   m_val <- c(2, 3)
-  m    <- GaussianVAR(Phi_pre = Phi1, Sigma_pre = diag(K),
+  m    <- GaussianVARModel(Phi_pre = Phi1, Sigma_pre = diag(K),
                       mean_pre = m_val, mean_post = m_val)
   hist  <- matrix(rep(m_val, 5), nrow = 5, byrow = TRUE)
   d_cm  <- model_density(m, x = m_val,     regime = "pre", history = hist)
@@ -140,7 +140,7 @@ test_that("VAR(2): model_density uses both lags correctly", {
   K    <- 2
   Phi1 <- 0.3 * diag(K)
   Phi2 <- 0.1 * diag(K)
-  m    <- GaussianVAR(Phi_pre = list(Phi1, Phi2), Sigma_pre = diag(K),
+  m    <- GaussianVARModel(Phi_pre = list(Phi1, Phi2), Sigma_pre = diag(K),
                       mean_pre = c(0, 0), mean_post = c(1, 1))
   hist <- matrix(c(1, 1,   # lag-2 row (older)
                    2, 2),  # lag-1 row (more recent)
@@ -157,7 +157,7 @@ test_that("VAR(2): model_density uses both lags correctly", {
 test_that("likelihood_increment: post > pre when observation is near post mean", {
   K    <- 2
   Phi1 <- 0.3 * diag(K)
-  m    <- GaussianVAR(Phi_pre = Phi1, Sigma_pre = diag(K),
+  m    <- GaussianVARModel(Phi_pre = Phi1, Sigma_pre = diag(K),
                       mean_pre = c(0, 0), mean_post = c(3, 3))
   inc <- likelihood_increment(m, x = c(3, 3), history = NULL, log = TRUE)
   expect_gt(inc, 0)
@@ -166,17 +166,17 @@ test_that("likelihood_increment: post > pre when observation is near post mean",
 test_that("likelihood_increment: near pre-change mean gives negative log-increment", {
   K    <- 2
   Phi1 <- 0.3 * diag(K)
-  m    <- GaussianVAR(Phi_pre = Phi1, Sigma_pre = diag(K),
+  m    <- GaussianVARModel(Phi_pre = Phi1, Sigma_pre = diag(K),
                       mean_pre = c(0, 0), mean_post = c(5, 5))
   inc <- likelihood_increment(m, x = c(0, 0), history = NULL, log = TRUE)
   expect_lt(inc, 0)
 })
 
-test_that("compute_increments returns length-N finite vector for GaussianVAR", {
+test_that("compute_increments returns length-N finite vector for GaussianVARModel", {
   set.seed(1)
   K    <- 3
   Phi1 <- 0.3 * diag(K)
-  m    <- GaussianVAR(Phi_pre = Phi1, Sigma_pre = diag(K),
+  m    <- GaussianVARModel(Phi_pre = Phi1, Sigma_pre = diag(K),
                       mean_pre = rep(0, K), mean_post = rep(1, K))
   x <- matrix(rnorm(50 * K), nrow = 50, ncol = K)
   inc <- compute_increments(TSM(m), x, log = TRUE)
@@ -189,7 +189,7 @@ test_that("compute_increments: TSM grows post-change under correct alternative",
   K    <- 2
   Phi1 <- 0.3 * diag(K)
   Sig  <- diag(K)
-  m    <- GaussianVAR(Phi_pre = Phi1, Sigma_pre = Sig,
+  m    <- GaussianVARModel(Phi_pre = Phi1, Sigma_pre = Sig,
                       mean_pre = c(0, 0), mean_post = c(2, 2))
   x_pre  <- matrix(rnorm(30 * K), nrow = 30) %*% chol(Sig)
   x_post <- matrix(rnorm(70 * K, mean = 2), nrow = 70) %*% chol(Sig)
@@ -203,7 +203,7 @@ test_that("run_detector raises alarm on VAR stream with clear mean shift", {
   set.seed(99)
   K    <- 2
   Phi1 <- 0.2 * diag(K)
-  m    <- GaussianVAR(Phi_pre = Phi1, Sigma_pre = diag(K),
+  m    <- GaussianVARModel(Phi_pre = Phi1, Sigma_pre = diag(K),
                       mean_pre = c(0, 0), mean_post = c(3, 3))
   x_pre  <- matrix(rnorm(30 * K), 30, K)
   x_post <- matrix(rnorm(120 * K, mean = 3), 120, K)

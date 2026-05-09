@@ -405,7 +405,7 @@ nu_ar <- 150   # change-point
 phi <- c(0.5, 0.2, 0.1)   # phi_1, phi_2, phi_3  (sum = 0.8 < 1)
 sigma_ar <- 0.5
 
-model_ar3 <- GaussianVAR(
+model_ar3 <- GaussianVARModel(
   Phi_pre   = phi,           # numeric vector → list of three 1-by-1 matrices
   Sigma_pre = matrix(sigma_ar^2),
   mean_pre  = 0,

@@ -2,9 +2,9 @@
 
 `multichangepoints` is an R package scaffold for multivariate sequential change-point detection via test supermartingales. It is modularized into: 
 
-- model classes (`GaussianVAR`, `BernoulliModel`, `BoundedModel`)
+- model classes (`GaussianVARModel` / convenience wrappers `GaussianModel`, `MultivariateGaussianModel`; `BernoulliModel`; `BoundedModel`)
 - test supermartingales (`TSM`)
-- detectors (`ShiryaevRobertsDetector`, `CUSUMDetector`)
+- detectors (`ShiryaevRobertsDetector`, `CUSUMDetector`, `LocalizedDetector`)
 - multistream combiners (`AverageCombiner`, `ProductCombiner`, `UniversalPortfolioCombiner`)
 - simulation helpers (`DGP`, `run_simulation`)
 

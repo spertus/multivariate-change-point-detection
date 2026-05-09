@@ -1,8 +1,8 @@
-# ---- GaussianVAR constructor -----------------------------------------------
+# ---- GaussianVARModel constructor -----------------------------------------------
 
-test_that("GaussianModel wrapper returns GaussianVAR (K=1 IID)", {
+test_that("GaussianModel wrapper returns GaussianVARModel (K=1 IID)", {
   m <- GaussianModel(mean_pre = 0, sd_pre = 1, mean_post = 1, sd_post = 1)
-  expect_s4_class(m, "GaussianVAR")
+  expect_s4_class(m, "GaussianVARModel")
   expect_equal(length(m@Phi_pre),   0L)
   expect_equal(length(m@Phi_post),  0L)
   expect_equal(m@mean_pre,  0)
@@ -11,67 +11,67 @@ test_that("GaussianModel wrapper returns GaussianVAR (K=1 IID)", {
   expect_equal(m@Sigma_post, matrix(1))
 })
 
-test_that("MultivariateGaussianModel wrapper returns GaussianVAR (K>1 IID)", {
+test_that("MultivariateGaussianModel wrapper returns GaussianVARModel (K>1 IID)", {
   m <- MultivariateGaussianModel(mu_pre = c(0, 0), Sigma_pre = diag(2),
                                   mu_post = c(1, 1), Sigma_post = diag(2))
-  expect_s4_class(m, "GaussianVAR")
+  expect_s4_class(m, "GaussianVARModel")
   expect_equal(length(m@Phi_pre), 0L)
   expect_equal(m@mean_pre,  c(0, 0))
   expect_equal(m@mean_post, c(1, 1))
 })
 
-test_that("GaussianVAR accepts numeric vector Phi_pre as univariate AR coefficients", {
+test_that("GaussianVARModel accepts numeric vector Phi_pre as univariate AR coefficients", {
   phi <- c(0.5, 0.2, 0.1)
-  m   <- GaussianVAR(Phi_pre = phi, Sigma_pre = matrix(1), mean_pre = 0, mean_post = 1)
+  m   <- GaussianVARModel(Phi_pre = phi, Sigma_pre = matrix(1), mean_pre = 0, mean_post = 1)
   expect_equal(length(m@Phi_pre), 3L)
   expect_equal(m@Phi_pre[[1]], matrix(0.5))
   expect_equal(m@Phi_pre[[2]], matrix(0.2))
   expect_equal(m@Phi_pre[[3]], matrix(0.1))
 })
 
-test_that("GaussianVAR accepts bare matrix Phi_pre as VAR(1)", {
+test_that("GaussianVARModel accepts bare matrix Phi_pre as VAR(1)", {
   K   <- 2
   Phi <- 0.3 * diag(K)
-  m   <- GaussianVAR(Phi_pre = Phi, Sigma_pre = diag(K),
+  m   <- GaussianVARModel(Phi_pre = Phi, Sigma_pre = diag(K),
                      mean_pre = c(0, 0), mean_post = c(1, 1))
   expect_equal(length(m@Phi_pre), 1L)
   expect_equal(m@Phi_pre[[1]], Phi)
 })
 
-test_that("GaussianVAR x0 defaults to zero vector", {
-  m <- GaussianVAR(Phi_pre = list(), Sigma_pre = matrix(1),
+test_that("GaussianVARModel x0 defaults to zero vector", {
+  m <- GaussianVARModel(Phi_pre = list(), Sigma_pre = matrix(1),
                    mean_pre = 0, mean_post = 1)
   expect_equal(m@x0, 0)
 })
 
-test_that("GaussianVAR rejects non-stationary pre-change model", {
+test_that("GaussianVARModel rejects non-stationary pre-change model", {
   expect_error(
-    GaussianVAR(Phi_pre = matrix(1.0), Sigma_pre = matrix(1),
+    GaussianVARModel(Phi_pre = matrix(1.0), Sigma_pre = matrix(1),
                 mean_pre = 0, mean_post = 1),
     "Pre-change VAR model is not stationary"
   )
 })
 
-test_that("GaussianVAR rejects non-stationary post-change model", {
+test_that("GaussianVARModel rejects non-stationary post-change model", {
   expect_error(
-    GaussianVAR(Phi_pre = matrix(0.3), Sigma_pre = matrix(1),
+    GaussianVARModel(Phi_pre = matrix(0.3), Sigma_pre = matrix(1),
                 mean_pre = 0, Phi_post = matrix(1.1), Sigma_post = matrix(1),
                 mean_post = 1),
     "Post-change VAR model is not stationary"
   )
 })
 
-test_that("GaussianVAR rejects mismatched mean lengths", {
+test_that("GaussianVARModel rejects mismatched mean lengths", {
   expect_error(
-    GaussianVAR(Phi_pre = list(), Sigma_pre = matrix(1),
+    GaussianVARModel(Phi_pre = list(), Sigma_pre = matrix(1),
                 mean_pre = 0, mean_post = c(1, 2)),
     "same length"
   )
 })
 
-# ---- model_density for GaussianVAR ------------------------------------------
+# ---- model_density for GaussianVARModel ------------------------------------------
 
-test_that("model_density returns positive scalar for IID GaussianVAR (K=1)", {
+test_that("model_density returns positive scalar for IID GaussianVARModel (K=1)", {
   m <- GaussianModel(mean_pre = 0, sd_pre = 1, mean_post = 1, sd_post = 1)
   d <- model_density(m, x = 0, regime = "pre")
   expect_length(d, 1L)
@@ -92,9 +92,9 @@ test_that("model_density: post density exceeds pre density near post mean (K=2 I
   expect_gt(d_post, d_pre)
 })
 
-test_that("model_density for AR(1) GaussianVAR peaks at conditional mean", {
+test_that("model_density for AR(1) GaussianVARModel peaks at conditional mean", {
   phi <- 0.6
-  m   <- GaussianVAR(Phi_pre = matrix(phi), Sigma_pre = matrix(1),
+  m   <- GaussianVARModel(Phi_pre = matrix(phi), Sigma_pre = matrix(1),
                      mean_pre = 0, mean_post = 2)
   # history = 1 → cond mean = (1-phi)*0 + phi*1 = 0.6
   cm   <- phi * 1
@@ -103,9 +103,9 @@ test_that("model_density for AR(1) GaussianVAR peaks at conditional mean", {
   expect_gt(d_cm, d_off)
 })
 
-test_that("model_density for AR(2) GaussianVAR uses both lags", {
+test_that("model_density for AR(2) GaussianVARModel uses both lags", {
   phi1 <- 0.5; phi2 <- 0.2
-  m    <- GaussianVAR(Phi_pre = c(phi1, phi2), Sigma_pre = matrix(1),
+  m    <- GaussianVARModel(Phi_pre = c(phi1, phi2), Sigma_pre = matrix(1),
                       mean_pre = 0, mean_post = 3)
   # history = c(1, 2) → lag-1 = 2, lag-2 = 1; cond mean = phi1*2 + phi2*1 = 1.2
   cm   <- phi1 * 2 + phi2 * 1
@@ -115,10 +115,10 @@ test_that("model_density for AR(2) GaussianVAR uses both lags", {
   expect_gt(d_cm, d_off)
 })
 
-test_that("model_density for VAR(1) GaussianVAR peaks at conditional mean (K=2)", {
+test_that("model_density for VAR(1) GaussianVARModel peaks at conditional mean (K=2)", {
   K    <- 2
   Phi1 <- matrix(c(0.4, 0.0, 0.0, 0.3), K, K)
-  m    <- GaussianVAR(Phi_pre = Phi1, Sigma_pre = diag(K),
+  m    <- GaussianVARModel(Phi_pre = Phi1, Sigma_pre = diag(K),
                       mean_pre = c(0, 0), mean_post = c(2, 2))
   hist <- matrix(c(1, 2), nrow = 1)   # one lag row
   cm   <- as.numeric(Phi1 %*% c(1, 2))
@@ -130,7 +130,7 @@ test_that("model_density for VAR(1) GaussianVAR peaks at conditional mean (K=2)"
 test_that("model_density uses x0 when history is empty (K=1 AR(1))", {
   x0  <- 5
   phi <- 0.4
-  m   <- GaussianVAR(Phi_pre = matrix(phi), Sigma_pre = matrix(1),
+  m   <- GaussianVARModel(Phi_pre = matrix(phi), Sigma_pre = matrix(1),
                      mean_pre = 0, mean_post = 3, x0 = x0)
   cm_x0   <- phi * x0
   cm_zero <- phi * 0
@@ -149,7 +149,7 @@ test_that("BernoulliModel increment favors post-change when x=1 and p_post > p_p
   expect_lt(inc0, 1)
 })
 
-# ---- likelihood_increment for GaussianVAR -----------------------------------
+# ---- likelihood_increment for GaussianVARModel -----------------------------------
 
 test_that("likelihood_increment returns positive scalar for IID K=1", {
   m   <- GaussianModel(mean_pre = 0, sd_pre = 1, mean_post = 1, sd_post = 1)
@@ -165,9 +165,9 @@ test_that("likelihood_increment: log=TRUE and linear are consistent", {
   expect_equal(log(inc), log_inc, tolerance = 1e-12)
 })
 
-test_that("likelihood_increment for AR(1) GaussianVAR uses history", {
+test_that("likelihood_increment for AR(1) GaussianVARModel uses history", {
   phi <- 0.7
-  m   <- GaussianVAR(Phi_pre = matrix(phi), Sigma_pre = matrix(1),
+  m   <- GaussianVARModel(Phi_pre = matrix(phi), Sigma_pre = matrix(1),
                      mean_pre = 0, mean_post = 4)
   inc_no_hist <- likelihood_increment(m, x = 1, history = NULL,   log = TRUE)
   inc_hist    <- likelihood_increment(m, x = 1, history = c(10),  log = TRUE)
@@ -180,7 +180,7 @@ test_that("likelihood_increment: near post mean gives positive log increment (K=
   expect_gt(inc, 0)
 })
 
-test_that("compute_increments returns length-N finite vector for IID GaussianVAR", {
+test_that("compute_increments returns length-N finite vector for IID GaussianVARModel", {
   m   <- GaussianModel(mean_pre = 0, sd_pre = 1, mean_post = 1, sd_post = 1)
   x   <- rnorm(30)
   inc <- compute_increments(TSM(m), x, log = TRUE)
