@@ -123,3 +123,98 @@ test_that("S-R PFA recursion injects precomputed pi_t terms with fixed threshold
   expect_equal(out$statistic[3], 1.0)
   expect_false(out$alarm)
 })
+
+# ---- LocalizedDetector tests -----------------------------------------------
+
+test_that("LocalizedDetector constructor sets marginal alpha to alpha/K", {
+  ld <- LocalizedDetector(K = 4, alpha = 0.08, criterion = "ARL")
+  expect_equal(length(ld@detectors), 4L)
+  for (k in seq_len(4)) {
+    expect_equal(ld@detectors[[k]]@alpha, 0.08 / 4)
+    expect_equal(ld@detectors[[k]]@threshold, 4 / 0.08)
+    expect_true(is(ld@detectors[[k]], "ShiryaevRobertsDetector"))
+  }
+  expect_equal(ld@alpha, 0.08)
+  expect_equal(ld@criterion, "ARL")
+})
+
+test_that("LocalizedDetector constructor respects custom threshold", {
+  ld <- LocalizedDetector(K = 2, alpha = 0.1, criterion = "ARL", threshold = 50)
+  expect_equal(ld@detectors[[1]]@threshold, 50)
+  expect_equal(ld@detectors[[2]]@threshold, 50)
+})
+
+test_that("LocalizedDetector run_detector returns K stream results", {
+  set.seed(1)
+  K <- 3
+  n <- 30
+  ld  <- LocalizedDetector(K = K, alpha = 0.05, criterion = "ARL")
+  ev  <- matrix(rep(1.3, n * K), nrow = n, ncol = K)
+  out <- run_detector(ld, evidence = ev)
+  expect_equal(length(out$stream_results), K)
+  expect_equal(names(out$stream_results), paste0("stream_", seq_len(K)))
+  for (k in seq_len(K)) {
+    expect_equal(length(out$stream_results[[k]]$statistic), n)
+  }
+})
+
+test_that("LocalizedDetector identifies correct first-alarming stream", {
+  # Stream 1: strong evidence (should alarm early); Stream 2: flat evidence (no alarm)
+  n   <- 100
+  ev  <- matrix(c(rep(1.4, n), rep(1.0, n)), nrow = n, ncol = 2)
+  ld  <- LocalizedDetector(K = 2, alpha = 0.1, criterion = "ARL")
+  out <- run_detector(ld, evidence = ev)
+  expect_true(out$alarm)
+  expect_equal(out$first_alarm_stream, 1L)
+  expect_equal(out$stopping_time, out$stream_results$stream_1$stopping_time)
+})
+
+test_that("LocalizedDetector global stopping time is min of marginal stopping times", {
+  # Construct two detectors with known stopping times
+  n   <- 50
+  ev  <- matrix(rep(1.5, n * 3), nrow = n, ncol = 3)
+  ld  <- LocalizedDetector(K = 3, alpha = 0.05, criterion = "ARL")
+  out <- run_detector(ld, evidence = ev)
+  marginal_stops <- vapply(out$stream_results, function(r) r$stopping_time, numeric(1L))
+  expect_equal(out$stopping_time, min(marginal_stops))
+})
+
+test_that("LocalizedDetector no alarm when evidence is below 1", {
+  # Evidence < 1 means R_t has a stable fixed point below threshold; no alarm ever fires.
+  n   <- 200
+  ev  <- matrix(rep(0.5, n * 3), nrow = n, ncol = 3)
+  ld  <- LocalizedDetector(K = 3, alpha = 0.05, criterion = "ARL")
+  out <- run_detector(ld, evidence = ev)
+  expect_false(out$alarm)
+  expect_equal(out$stopping_time, Inf)
+  expect_true(is.na(out$first_alarm_stream))
+})
+
+test_that("LocalizedDetector log mode matches standard mode for stopping times", {
+  K   <- 2
+  n   <- 80
+  # Stream 1: evidence 1.4 throughout; Stream 2: evidence 0.9 throughout.
+  # Both streams have the same evidence pattern, so log mode should give same stopping times.
+  inc <- matrix(c(rep(1.4, n), rep(0.9, n)), nrow = n, ncol = K)
+  ld  <- LocalizedDetector(K = K, alpha = 0.1, criterion = "ARL")
+  out_std <- run_detector(ld, evidence = inc,      log = FALSE)
+  out_log <- run_detector(ld, evidence = log(inc), log = TRUE)
+  expect_equal(out_std$stopping_time, out_log$stopping_time)
+  for (k in seq_len(K)) {
+    expect_equal(
+      out_std$stream_results[[k]]$stopping_time,
+      out_log$stream_results[[k]]$stopping_time
+    )
+  }
+})
+
+test_that("LocalizedDetector rejects non-matrix evidence", {
+  ld <- LocalizedDetector(K = 2, alpha = 0.05, criterion = "ARL")
+  expect_error(run_detector(ld, evidence = c(1.1, 1.2, 1.3)), "numeric N-by-K matrix")
+})
+
+test_that("LocalizedDetector rejects wrong number of columns", {
+  ld <- LocalizedDetector(K = 3, alpha = 0.05, criterion = "ARL")
+  ev <- matrix(rep(1.1, 50 * 2), nrow = 50)
+  expect_error(run_detector(ld, evidence = ev), "3 column")
+})

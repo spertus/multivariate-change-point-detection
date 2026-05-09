@@ -213,7 +213,7 @@ Note that when the alternative is mis-specified, the helper TSM does not grow an
 
 ```{r multivariate detection}
 K <- 3 # number of streams
-N <- 50 # length of streams
+N <- 100 # length of streams
 dgp_mvn <- DGP(
   generator = default_multivariate_gaussian_dgp,
   pre_params = list(mu = c(0, 0, 0), Sigma = diag(K)), # parameters pre-change
@@ -225,51 +225,29 @@ dgp_mvn <- DGP(
 # generate data from the dgp
 x <- generate_stream(dgp_mvn, N = N, K = K)
 
-# simple vs simple
-# true alternative
+# true alternative: stream 1 shifts from 0 to 1; streams 2-3 unchanged
 model_true <- MultivariateGaussianModel(
   mu_pre = c(0, 0, 0),
   Sigma_pre = diag(K),
   mu_post = c(1, 0, 0),
   Sigma_post = diag(K)
 )
-# mis-specified alternative
+# mis-specified alternative: wrongly assumes all streams shift
 model_miss <- MultivariateGaussianModel(
   mu_pre = c(0, 0, 0),
   Sigma_pre = diag(K),
   mu_post = c(1, 1, 1),
   Sigma_post = diag(K)
 )
-# composite post-change model
-# estimating the post-change mean
-model_comp_pred <- MultivariateGaussianModel(
-  mu_pre = c(0, 0, 0),
-  Sigma_pre = diag(K),
-  mu_post = rbind(c(0,1), c(0,1), c(0,1)),
-  Sigma_post = diag(K),
-  method = "predictable"
-)
-# mixing over the post-change mean
-model_comp_mix <- MultivariateGaussianModel(
-  mu_pre = c(0, 0, 0),
-  Sigma_pre = diag(K),
-  mu_post = rbind(c(0,1), c(0,1), c(0,1)),
-  Sigma_post = diag(K),
-  method = "mixture"
-)
 
 # instantiate TSMs and compute increments
 inc_true <- compute_increments(TSM(model_true), x, log = TRUE)
 inc_miss <- compute_increments(TSM(model_miss), x, log = TRUE)
-inc_comp_pred <- compute_increments(TSM(model_comp_pred), x, log = TRUE)
-inc_comp_mix <- compute_increments(TSM(model_comp_mix), x, log = TRUE)
 
-# instantiate detector and compute sequence
-sr <-  ShiryaevRobertsDetector(alpha = 0.001, criterion = "ARL")
+# instantiate detector and run
+sr          <- ShiryaevRobertsDetector(alpha = 0.001, criterion = "ARL")
 det_out_true <- run_detector(sr, inc_true, log = TRUE)
 det_out_miss <- run_detector(sr, inc_miss, log = TRUE)
-det_out_comp_pred <- run_detector(sr, inc_comp_pred, log = TRUE)
-det_out_comp_mix <- run_detector(sr, inc_comp_mix, log = TRUE)
 ```
 
 ```{r multivariate normal figure, fig.cap="Multivariate data, helper TSMs, and detector statistics (true vs mis-specified alternative)."}
@@ -283,45 +261,32 @@ legend("topleft",
        legend = paste0("stream ", seq_len(ncol(x))),
        col = seq_len(ncol(x)), lty = 1, lwd = 1.5, cex = 0.8, bty = "n")
 
-# Panel 2: helper TSMs from increments
+# Panel 2: log-TSM paths
 tsm_true <- compute_tsm(TSM(model_true), x, log = TRUE)
 tsm_miss <- compute_tsm(TSM(model_miss), x, log = TRUE)
-tsm_comp_pred <- increments_to_tsm(inc_comp_pred, log = TRUE)
-tsm_comp_mix <- increments_to_tsm(inc_comp_mix, log = TRUE)
 plot(tsm_true, type = "l", lwd = 2, col = "darkgreen",
-     xlab = "time", ylab = "log helper TSM", main = "Helper TSMs", ylim = range(c(tsm_true, tsm_miss)))
+     xlab = "time", ylab = "log helper TSM", main = "Helper TSMs",
+     ylim = range(c(tsm_true, tsm_miss)))
 lines(tsm_miss, lwd = 2, col = "darkorange")
-lines(tsm_comp_pred, lwd = 2, col = "steelblue")
-lines(tsm_comp_mix, lwd = 2, col = "firebrick")
 abline(v = dgp_mvn@nu, lty = 2, col = "gray40")
 legend("topleft",
-       legend = c("true model", "mis-specified model", "predictable", "mixture"),
-       col = c("darkgreen", "darkorange", "steelblue","firebrick"),
+       legend = c("true model", "mis-specified model"),
+       col = c("darkgreen", "darkorange"),
        lty = 1, lwd = 2, cex = 0.8, bty = "n")
 
 # Panel 3: detector statistics
 plot(det_out_true$statistic, type = "l", lwd = 2, col = "darkgreen",
      xlab = "time", ylab = "log R_t", main = "S-R Statistics")
 lines(det_out_miss$statistic, lwd = 2, col = "darkorange")
-lines(det_out_comp_pred$statistic, lwd = 2, col = "steelblue")
-lines(det_out_comp_mix$statistic, lwd = 2, col = "firebrick")
 abline(h = log(sr@threshold), lty = 3, col = "gray40")
 abline(v = dgp_mvn@nu, lty = 2, col = "gray40")
-if (is.finite(det_out_true$stopping_time)) {
+if (is.finite(det_out_true$stopping_time))
   abline(v = det_out_true$stopping_time, lwd = 1.5, col = "darkgreen")
-}
-if (is.finite(det_out_miss$stopping_time)) {
+if (is.finite(det_out_miss$stopping_time))
   abline(v = det_out_miss$stopping_time, lwd = 1.5, col = "darkorange")
-}
-if (is.finite(det_out_comp_pred$stopping_time)) {
-  abline(v = det_out_comp_pred$stopping_time, lwd = 1.5, col = "steelblue")
-}
-if (is.finite(det_out_comp_mix$stopping_time)) {
-  abline(v = det_out_comp_mix$stopping_time, lwd = 1.5, col = "firebrick")
-}
 legend("topleft",
-       legend = c("true model", "mis-specified model", "predictable", "mixture"),
-       col = c("darkgreen", "darkorange", "steelblue", "firebrick"),
+       legend = c("true model", "mis-specified model"),
+       col = c("darkgreen", "darkorange"),
        lty = 1, lwd = 2, cex = 0.8, bty = "n")
 
 par(old_par)
@@ -440,13 +405,14 @@ nu_ar <- 150   # change-point
 phi <- c(0.5, 0.2, 0.1)   # phi_1, phi_2, phi_3  (sum = 0.8 < 1)
 sigma_ar <- 0.5
 
-model_ar3 <- ARpModel(
-  phi_pre   = phi, sigma_pre  = sigma_ar, mean_pre  = 0,
-  phi_post  = phi, sigma_post = sigma_ar, mean_post = 0.5
+model_ar3 <- GaussianVAR(
+  Phi_pre   = phi,           # numeric vector → list of three 1-by-1 matrices
+  Sigma_pre = matrix(sigma_ar^2),
+  mean_pre  = 0,
+  mean_post = 0.5
 )
 
 # Simulate an AR(3) path with a change at nu_ar
-# Using the intercept parameterisation internally stored in the object
 intercept_pre  <- model_ar3@mean_pre  * (1 - sum(phi))
 intercept_post <- model_ar3@mean_post * (1 - sum(phi))
 
@@ -511,6 +477,292 @@ if (is.finite(det_ar3$stopping_time))
 
 par(old_par)
 ```
+
+## Change-point localization
+
+Combining K marginal evidence streams into a single S-R statistic identifies *when* a change
+occurred, but discards information about *which* streams changed.  The `LocalizedDetector`
+applies the Bonferroni correction to K independent marginal S-R detectors: each stream runs at
+level α/K, so the union bound guarantees a global ARL ≥ 1/α and global PFA ≤ α while returning
+per-stream stopping times and statistics.
+
+The tradeoff depends on the sparsity of the change.  Under a **uniform** change (all K streams
+shift), the product-combined increment accumulates K independent post-change likelihood ratios
+per step, so the joint detector fires dramatically earlier.  Under a **sparse** change (only one
+stream shifts), the picture reverses: the K−1 null-stream log-increments average −0.5 each,
+pulling the combined log-increment negative on average and making the product-combining detector
+unreliable or slow — while the localized detector simply watches stream 1's marginal S-R and is
+unaffected by the null streams.
+
+We compare both on K = 10 IID Gaussian streams (N(0,1) pre-change, N(1,1) post-change) with a
+change at ν = 100:
+
+- **Sparse change**: only stream 1 shifts; streams 2–10 are unchanged.
+- **Uniform change**: all 10 streams shift simultaneously.
+
+### Setup
+
+```{r localization-setup}
+K     <- 10
+N     <- 500
+nu    <- 100
+alpha <- 0.001    # global nominal level — ARL >= 1 000
+
+set.seed(20260501)
+
+# Shared marginal model and TSM: N(0,1) -> N(1,1)
+marg_model <- GaussianModel(mean_pre = 0, sd_pre = 1, mean_post = 1, sd_post = 1)
+marg_tsm   <- TSM(marg_model)
+
+# Sparse scenario: only stream 1 shifts at nu
+x_sparse                  <- matrix(rnorm(N * K), nrow = N, ncol = K)
+x_sparse[(nu + 1L):N, 1L] <- rnorm(N - nu, mean = 1)
+
+# Uniform scenario: all K streams shift at nu
+x_uniform                <- matrix(rnorm(N * K), nrow = N, ncol = K)
+x_uniform[(nu + 1L):N, ] <- matrix(rnorm((N - nu) * K, mean = 1), nrow = N - nu, ncol = K)
+
+# Marginal log-increments: N-by-K matrix (column k = stream k)
+inc_sparse  <- sapply(seq_len(K), function(k)
+  compute_increments(marg_tsm, x_sparse[,  k], log = TRUE))
+inc_uniform <- sapply(seq_len(K), function(k)
+  compute_increments(marg_tsm, x_uniform[, k], log = TRUE))
+```
+
+### Running the detectors
+
+```{r localization-detectors}
+# Joint S-R: one detector at global level alpha fed product-combined log-increments.
+# Joint threshold = 1/alpha = 1 000.
+sr_joint <- ShiryaevRobertsDetector(alpha = alpha, criterion = "ARL")
+
+det_joint_sparse  <- run_detector(sr_joint,
+                       combine_streams(ProductCombiner(), inc_sparse,  log = TRUE),
+                       log = TRUE)
+det_joint_uniform <- run_detector(sr_joint,
+                       combine_streams(ProductCombiner(), inc_uniform, log = TRUE),
+                       log = TRUE)
+
+# Localized detector: K marginal S-R detectors, each at level alpha / K = 0.0001.
+# Marginal threshold = K / alpha = 10 000.
+ld <- LocalizedDetector(K = K, alpha = alpha, criterion = "ARL")
+
+det_loc_sparse  <- run_detector(ld, inc_sparse,  log = TRUE)
+det_loc_uniform <- run_detector(ld, inc_uniform, log = TRUE)
+
+# Per-stream N-by-K statistic matrices and K-length stopping-time vectors
+stat_loc_sparse  <- sapply(det_loc_sparse$stream_results,  function(r) r$statistic)
+stat_loc_uniform <- sapply(det_loc_uniform$stream_results, function(r) r$statistic)
+stop_loc_sparse  <- sapply(det_loc_sparse$stream_results,  function(r) r$stopping_time)
+stop_loc_uniform <- sapply(det_loc_uniform$stream_results, function(r) r$stopping_time)
+
+loc_thresh_log <- log(ld@detectors[[1L]]@threshold)   # log(K / alpha)
+
+fmt_stop <- function(t, nu) {
+  if (is.finite(t)) sprintf("t = %d (delay %d)", as.integer(t), as.integer(t - nu))
+  else "no alarm within horizon"
+}
+
+cat("--- Joint product S-R (threshold = 1/alpha = 1 000) ---\n")
+cat("  Sparse  (1 stream): ", fmt_stop(det_joint_sparse$stopping_time,  nu), "\n")
+cat("  Uniform (K streams):", fmt_stop(det_joint_uniform$stopping_time, nu), "\n")
+cat("\n--- Localized S-R (threshold = K/alpha = 10 000 per stream) ---\n")
+cat("  Sparse:  stream", det_loc_sparse$first_alarm_stream,
+    " ", fmt_stop(det_loc_sparse$stopping_time, nu), "\n")
+cat(sprintf("  Uniform: %d of %d streams alarmed; first alarm ",
+            sum(is.finite(stop_loc_uniform)), K),
+    fmt_stop(det_loc_uniform$stopping_time, nu), "\n")
+```
+
+### Scenario 1: sparse change (1 of K streams)
+
+Under sparse change the K−1 null streams each contribute a log-increment with expected value
+−0.5 per step (the KL divergence with sign reversed under the wrong model).  With K = 10 and
+only stream 1 changing, the combined log-increment averages 0.5 − 9×0.5 = −4 per step: the
+joint product S-R drifts downward and rarely reaches its threshold within the observation
+window.  The localized detector is unaffected — stream 1's marginal S-R accumulates 0.5 nats
+per step against a threshold of log(10 000) ≈ 9.2, alarming after roughly 10 post-change steps
+— while streams 2–10 remain flat, immediately identifying the source of the change.
+
+```{r localization-sparse-fig, fig.width = 9, fig.height = 4, fig.cap = "Sparse change: stream 1 shifts from N(0,1) to N(1,1) at nu = 100; streams 2-10 are unchanged. Left: data streams (stream 1 in red). Centre: joint product S-R — the nine null-stream increments pull the combined statistic downward; the threshold is unlikely to be crossed within the horizon. Right: localized per-stream S-R statistics — only stream 1 climbs to the marginal threshold, identifying it as the changed stream."}
+
+old_par <- par(mfrow = c(1, 3), mar = c(4.5, 4, 3, 0.5))
+
+s_col <- c("firebrick", rep("gray75", K - 1L))
+s_lwd <- c(2,           rep(1,        K - 1L))
+
+# --- Panel 1: data ---
+matplot(x_sparse, type = "l", lty = 1, col = s_col, lwd = s_lwd,
+        xlab = "time", ylab = expression(X[tk]),
+        main = sprintf("Sparse data  (nu = %d)", nu))
+abline(v = nu, lty = 2, col = "gray40")
+legend("topleft", bty = "n", cex = 0.75,
+       legend = c("stream 1  (changes)", "streams 2-10"),
+       col = c("firebrick", "gray75"), lty = 1, lwd = c(2, 1))
+
+# --- Panel 2: joint product S-R ---
+plot(det_joint_sparse$statistic, type = "l", lwd = 2, col = "steelblue",
+     xlab = "time", ylab = expression(log~R[t]),
+     main = sprintf("Joint product S-R  (thr = %g)", sr_joint@threshold))
+abline(h = log(sr_joint@threshold), lty = 3, col = "gray40")
+abline(v = nu, lty = 2, col = "gray40")
+if (is.finite(det_joint_sparse$stopping_time)) {
+  abline(v = det_joint_sparse$stopping_time, lwd = 2, col = "darkgreen")
+  alarm_label <- sprintf("alarm  t = %g", det_joint_sparse$stopping_time)
+} else {
+  alarm_label <- "no alarm within horizon"
+}
+legend("topleft", bty = "n", cex = 0.75,
+       legend = c("statistic", "threshold", alarm_label),
+       col = c("steelblue", "gray40", "darkgreen"),
+       lty = c(1, 3, 1), lwd = c(2, 1, 2))
+
+# --- Panel 3: localized per-stream S-R statistics ---
+matplot(stat_loc_sparse, type = "l", lty = 1, col = s_col, lwd = s_lwd,
+        xlab = "time", ylab = expression(log~R[t]^{(k)}),
+        main = sprintf("Localized S-R  (thr = %g per stream)",
+                       ld@detectors[[1L]]@threshold))
+abline(h = loc_thresh_log, lty = 3, col = "gray40")
+abline(v = nu, lty = 2, col = "gray40")
+for (k in seq_len(K)) {
+  if (is.finite(stop_loc_sparse[k]))
+    abline(v = stop_loc_sparse[k], col = s_col[k],
+           lwd = if (k == 1L) 2 else 0.8)
+}
+legend("topleft", bty = "n", cex = 0.75,
+       legend = c("stream 1  (changes)", "streams 2-10", "threshold"),
+       col = c("firebrick", "gray75", "gray40"),
+       lty = c(1, 1, 3), lwd = c(2, 1, 1))
+
+par(old_par)
+```
+
+### Scenario 2: uniform change (all K streams)
+
+When all K streams shift simultaneously the combined log-increment averages K × 0.5 = 5 nats
+per step — K times the signal of any single marginal stream — and the joint S-R clears its
+threshold almost immediately after the change.  The localized detector, watching each stream
+independently at its K-fold higher threshold, takes roughly the same ∼10 steps per stream as
+in the sparse case, but confirms that all K streams changed.
+
+```{r localization-uniform-fig, fig.width = 9, fig.height = 4, fig.cap = "Uniform change: all K = 10 streams shift at nu = 100. Left: data streams. Centre: joint product S-R fires immediately after the change because K independent post-change signals compound multiplicatively. Right: per-stream localized S-R statistics — all K statistics climb in parallel to the marginal threshold, confirming the extent of the change."}
+
+old_par <- par(mfrow = c(1, 3), mar = c(4.5, 4, 3, 0.5))
+
+u_col <- rainbow(K, s = 0.7, v = 0.8)
+
+# --- Panel 1: data ---
+matplot(x_uniform, type = "l", lty = 1, col = u_col, lwd = 1.2,
+        xlab = "time", ylab = expression(X[tk]),
+        main = sprintf("Uniform data  (nu = %d)", nu))
+abline(v = nu, lty = 2, col = "gray40")
+legend("topleft", bty = "n", cex = 0.7,
+       legend = paste0("stream ", seq_len(K)), col = u_col, lty = 1, lwd = 1.2)
+
+# --- Panel 2: joint product S-R ---
+plot(det_joint_uniform$statistic, type = "l", lwd = 2, col = "steelblue",
+     xlab = "time", ylab = expression(log~R[t]),
+     main = sprintf("Joint product S-R  (thr = %g)", sr_joint@threshold))
+abline(h = log(sr_joint@threshold), lty = 3, col = "gray40")
+abline(v = nu, lty = 2, col = "gray40")
+if (is.finite(det_joint_uniform$stopping_time))
+  abline(v = det_joint_uniform$stopping_time, lwd = 2, col = "darkgreen")
+legend("topleft", bty = "n", cex = 0.75,
+       legend = c("statistic", "threshold",
+                  sprintf("alarm  t = %g  (delay %g)",
+                          det_joint_uniform$stopping_time,
+                          det_joint_uniform$stopping_time - nu)),
+       col = c("steelblue", "gray40", "darkgreen"),
+       lty = c(1, 3, 1), lwd = c(2, 1, 2))
+
+# --- Panel 3: per-stream localized S-R statistics ---
+matplot(stat_loc_uniform, type = "l", lty = 1, col = u_col, lwd = 1.2,
+        xlab = "time", ylab = expression(log~R[t]^{(k)}),
+        main = sprintf("Localized S-R  (thr = %g per stream)",
+                       ld@detectors[[1L]]@threshold))
+abline(h = loc_thresh_log, lty = 3, col = "gray40")
+abline(v = nu, lty = 2, col = "gray40")
+for (k in seq_len(K)) {
+  if (is.finite(stop_loc_uniform[k]))
+    abline(v = stop_loc_uniform[k], col = u_col[k], lwd = 0.8)
+}
+legend("topleft", bty = "n", cex = 0.7,
+       legend = paste0("stream ", seq_len(K)), col = u_col, lty = 1, lwd = 1.2)
+
+par(old_par)
+```
+
+### Comparing delays and localization
+
+Stopping times may be `Inf` if a detector does not alarm within the horizon N = 500; those
+cases are capped at N − ν for display and marked in grey.
+
+```{r localization-comparison, fig.width = 7, fig.height = 4, fig.cap = "Left: detection delays (capped at the horizon N - nu = 400 for non-alarms, shown in grey). Under sparse change the joint product detector rarely alarms because K-1 null-stream increments overwhelm stream 1's signal; the localized detector fires quickly on stream 1 alone. Under uniform change the joint product fires almost immediately (K signals compound), while the localized detector takes ~10 steps per stream. Right: binary grid showing which localized streams alarmed — sparse change is pinpointed to stream 1; uniform change lights up all K streams."}
+
+old_par <- par(mfrow = c(1, 2), mar = c(5.5, 4.5, 3, 0.5))
+
+cap_delay <- N - nu   # 400: display cap for non-alarms
+
+safe_delay <- function(t) if (is.finite(t)) as.numeric(t - nu) else cap_delay
+alarm_col  <- function(t, yes_col) if (is.finite(t)) yes_col else "gray82"
+
+delay_mat <- rbind(
+  "joint (product)" = c(safe_delay(det_joint_sparse$stopping_time),
+                        safe_delay(det_joint_uniform$stopping_time)),
+  "localized"       = c(safe_delay(det_loc_sparse$stopping_time),
+                        safe_delay(det_loc_uniform$stopping_time))
+)
+colnames(delay_mat) <- c("sparse\n(1 of K)", "uniform\n(all K)")
+
+# column-major colour order for barplot(beside = TRUE):
+# [col1-row1, col1-row2, col2-row1, col2-row2]
+bar_cols <- c(alarm_col(det_joint_sparse$stopping_time,  "steelblue"),
+              alarm_col(det_loc_sparse$stopping_time,    "firebrick"),
+              alarm_col(det_joint_uniform$stopping_time, "steelblue"),
+              alarm_col(det_loc_uniform$stopping_time,   "firebrick"))
+
+# --- Panel 1: delay barplot ---
+barplot(delay_mat, beside = TRUE, col = bar_cols,
+        ylim = c(0, cap_delay * 1.12),
+        ylab = "detection delay (steps; grey = no alarm)",
+        main = "Detection delays",
+        las = 1)
+abline(h = cap_delay, lty = 2, col = "gray50")
+legend("topright", bty = "n", cex = 0.8,
+       legend = c("joint (product)", "localized (Bonferroni)", "no alarm (capped)"),
+       fill   = c("steelblue", "firebrick", "gray82"))
+
+# --- Panel 2: which localized streams alarmed? ---
+alarmed_mat <- rbind(
+  sparse  = as.integer(is.finite(stop_loc_sparse)),
+  uniform = as.integer(is.finite(stop_loc_uniform))
+)
+# image: x = streams 1:K, y = scenarios 1:2; flip row order so sparse is on top (y=2)
+image(seq_len(K), 1:2, t(alarmed_mat[2:1, , drop = FALSE]),
+      col  = c("gray88", "firebrick"),
+      xaxt = "n", yaxt = "n",
+      xlab = "stream", ylab = "",
+      main = "Localized: which streams alarmed?")
+axis(1, at = seq_len(K), labels = paste0("S", seq_len(K)), las = 2, cex.axis = 0.8)
+axis(2, at = 1:2, labels = c("uniform", "sparse"), las = 1, cex.axis = 0.85)
+box()
+
+par(old_par)
+```
+
+The two scenarios reveal a fundamental tradeoff:
+
+- **Sparse change** — the joint product detector is harmed by the K−1 null streams: their
+  increments average −0.5 nats/step each, pulling the combined log-statistic downward so that
+  the threshold is rarely cleared within a finite horizon.  The localized detector ignores this
+  dilution — each marginal S-R receives only its own stream's increments — and correctly fires
+  on stream 1 within ∼10 steps while leaving streams 2–10 quiescent.
+
+- **Uniform change** — the product of K post-change increments grows K times faster in
+  log-space, giving the joint detector an overwhelming speed advantage over the localized
+  detector (which pays the K-fold Bonferroni threshold penalty without benefiting from signal
+  aggregation).  The localized detector compensates with diagnostic value: the per-stream alarm
+  map immediately confirms that all K streams have changed.
 
 <!-- ## Application to commodity prices -->
 
