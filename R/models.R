@@ -10,7 +10,7 @@ setClass("UnivariateModel", contains = "Model")
 # purpose: base class for models with vector observations at each time t
 setClass("MultivariateModel", contains = "Model")
 
-# Class: GaussianVAR
+# Class: GaussianVARModel
 # purpose: unified Gaussian VAR(p) model covering univariate IID (K=1, Phi=list()),
 #          univariate AR(p) (K=1, Phi=list of 1x1 matrices), and vector VAR(p) (K>1).
 #          Pre and post regimes share Phi and Sigma by default; the primary use-case
@@ -21,7 +21,7 @@ setClass("MultivariateModel", contains = "Model")
 #   mean_pre, mean_post   = length-K long-run mean vectors
 #   x0                    = length-K initialisation vector used when history is too short
 setClass(
-  "GaussianVAR",
+  "GaussianVARModel",
   contains = "MultivariateModel",
   slots = c(
     Phi_pre   = "list",   Sigma_pre  = "matrix", mean_pre  = "numeric",
@@ -34,6 +34,28 @@ setClass(
 # purpose: Bernoulli pre/post model
 setClass("BernoulliModel", contains = "UnivariateModel",
          slots = c(p_pre = "numeric", p_post = "numeric"))
+
+# Class: BoundedModel
+# purpose: test martingale model for [0,1]-bounded univariate observations using
+#          AGRAPA bets (Waudby-Smith and Ramdas, 2024).  The one-sided null is
+#          E[X_t] <= eta; post-change alternative is E[X_t] > eta.
+#          Increment at time t: 1 + lambda_t * (X_t - eta) where lambda_t is
+#          the AGRAPA bet computed from the lagged history X_1,...,X_{t-1}.
+# slots:
+#   eta    = null mean upper bound in (0, 1)
+#   c      = AGRAPA truncation factor; bet is capped at c / eta
+#   sd_min = floor on the lagged SD estimate (prevents division by zero)
+#   eps    = small constant added to eta in the cap denominator
+setClass(
+  "BoundedModel",
+  contains = "UnivariateModel",
+  slots = c(
+    eta    = "numeric",
+    c      = "numeric",
+    sd_min = "numeric",
+    eps    = "numeric"
+  )
+)
 
 # ---- internal helpers ----
 
@@ -106,7 +128,7 @@ setClass("BernoulliModel", contains = "UnivariateModel",
 
 # ---- constructors ----
 
-# Constructor: GaussianVAR
+# Constructor: GaussianVARModel
 # inputs:
 #   Phi_pre, Phi_post     = list of p K-by-K AR coefficient matrices (lag 1 ... lag p);
 #                           a bare K-by-K matrix is coerced to a length-1 list;
@@ -120,8 +142,8 @@ setClass("BernoulliModel", contains = "UnivariateModel",
 #   x0                    = length-K initialisation vector (default zero vector)
 #   name                  = model label
 # outputs:
-#   GaussianVAR object
-GaussianVAR <- function(Phi_pre, Sigma_pre, mean_pre,
+#   GaussianVARModel object
+GaussianVARModel <- function(Phi_pre, Sigma_pre, mean_pre,
                         mean_post,
                         Phi_post   = Phi_pre,
                         Sigma_post = Sigma_pre,
@@ -163,7 +185,7 @@ GaussianVAR <- function(Phi_pre, Sigma_pre, mean_pre,
   if (length(x0) != K)
     stop("`x0` must have length K.", call. = FALSE)
 
-  new("GaussianVAR",
+  new("GaussianVARModel",
       name       = name,
       Phi_pre    = Phi_pre,
       Sigma_pre  = Sigma_pre,
@@ -175,17 +197,17 @@ GaussianVAR <- function(Phi_pre, Sigma_pre, mean_pre,
 }
 
 # Constructor: GaussianModel
-# purpose: convenience wrapper — K=1 IID Gaussian; returns a GaussianVAR with Phi = list()
+# purpose: convenience wrapper — K=1 IID Gaussian; returns a GaussianVARModel with Phi = list()
 # inputs:
 #   mean_pre, mean_post = scalar long-run means
 #   sd_pre, sd_post     = positive innovation standard deviations (default 1)
 #   name                = model label
 # outputs:
-#   GaussianVAR object (K = 1, VAR(0))
+#   GaussianVARModel object (K = 1, VAR(0))
 GaussianModel <- function(mean_pre, mean_post, sd_pre = 1, sd_post = 1, name = "gaussian") {
   if (is.null(sd_pre)  || length(sd_pre)  == 0L) sd_pre  <- 1
   if (is.null(sd_post) || length(sd_post) == 0L) sd_post <- 1
-  GaussianVAR(
+  GaussianVARModel(
     Phi_pre    = list(),
     Sigma_pre  = matrix(sd_pre^2),
     mean_pre   = as.numeric(mean_pre),
@@ -197,19 +219,19 @@ GaussianModel <- function(mean_pre, mean_post, sd_pre = 1, sd_post = 1, name = "
 }
 
 # Constructor: MultivariateGaussianModel
-# purpose: convenience wrapper — IID multivariate Gaussian; returns GaussianVAR with Phi = list()
+# purpose: convenience wrapper — IID multivariate Gaussian; returns GaussianVARModel with Phi = list()
 # inputs:
 #   mu_pre, mu_post       = length-K long-run mean vectors
 #   Sigma_pre, Sigma_post = K-by-K covariance matrices (default identity)
 #   name                  = model label
 # outputs:
-#   GaussianVAR object (K >= 1, VAR(0))
+#   GaussianVARModel object (K >= 1, VAR(0))
 MultivariateGaussianModel <- function(mu_pre, Sigma_pre = NULL, mu_post, Sigma_post = NULL,
                                       name = "mv-gaussian") {
   K <- length(mu_pre)
   if (is.null(Sigma_pre))  Sigma_pre  <- diag(K)
   if (is.null(Sigma_post)) Sigma_post <- diag(K)
-  GaussianVAR(
+  GaussianVARModel(
     Phi_pre    = list(),
     Sigma_pre  = Sigma_pre,
     mean_pre   = as.numeric(mu_pre),
@@ -232,18 +254,42 @@ BernoulliModel <- function(p_pre, p_post, name = "bernoulli") {
   new("BernoulliModel", name = name, p_pre = p_pre, p_post = p_post)
 }
 
+# Constructor: BoundedModel
+# purpose: builds a [0,1]-bounded test martingale model with AGRAPA bets
+# inputs:
+#   eta    = numeric scalar null mean upper bound in (0, 1)
+#   c      = numeric scalar AGRAPA truncation factor in (0, 1], default 0.75
+#   sd_min = numeric scalar floor for the lagged SD estimate, default 0.01
+#   eps    = numeric scalar added to eta in the cap denominator, default 1e-5
+#   name   = character model label
+# outputs:
+#   BoundedModel object
+BoundedModel <- function(eta, c = 0.75, sd_min = 0.01, eps = 1e-5, name = "bounded") {
+  if (length(eta) != 1L || !is.finite(eta) || eta <= 0 || eta >= 1)
+    stop("`eta` must be a scalar in (0, 1).", call. = FALSE)
+  if (length(c) != 1L || !is.finite(c) || c <= 0 || c > 1)
+    stop("`c` must be a scalar in (0, 1].", call. = FALSE)
+  if (length(sd_min) != 1L || sd_min <= 0)
+    stop("`sd_min` must be a positive scalar.", call. = FALSE)
+  if (length(eps) != 1L || eps < 0)
+    stop("`eps` must be a non-negative scalar.", call. = FALSE)
+  new("BoundedModel", name = name,
+      eta = as.numeric(eta), c = as.numeric(c),
+      sd_min = as.numeric(sd_min), eps = as.numeric(eps))
+}
+
 # ---- model_density methods ----
 
-# Method: model_density for GaussianVAR
+# Method: model_density for GaussianVARModel
 # inputs:
-#   object  = GaussianVAR object
+#   object  = GaussianVARModel object
 #   x       = length-K numeric vector (single observation; scalar acceptable when K=1)
 #   regime  = "pre" or "post"
 #   history = optional numeric N_hist-by-K matrix (or length-N vector for K=1) of past
 #             observations; rows shorter than the lag order are padded with x0
 # outputs:
 #   numeric scalar Gaussian conditional density
-setMethod("model_density", "GaussianVAR", function(object, x, regime = c("pre", "post"), history = NULL) {
+setMethod("model_density", "GaussianVARModel", function(object, x, regime = c("pre", "post"), history = NULL) {
   regime <- match.arg(regime)
   Phi    <- if (regime == "pre") object@Phi_pre  else object@Phi_post
   Sigma  <- if (regime == "pre") object@Sigma_pre else object@Sigma_post
@@ -271,15 +317,15 @@ setMethod("model_density", "BernoulliModel", function(object, x, regime = c("pre
 
 # ---- likelihood_increment methods ----
 
-# Method: likelihood_increment for GaussianVAR
+# Method: likelihood_increment for GaussianVARModel
 # inputs:
-#   object  = GaussianVAR object
+#   object  = GaussianVARModel object
 #   x       = length-K numeric vector (single observation; scalar acceptable when K=1)
 #   history = optional history: numeric vector (K=1) or matrix (K>1) of past observations
 #   log     = logical; return log-increment when TRUE
 # outputs:
 #   numeric scalar increment (or log-increment)
-setMethod("likelihood_increment", "GaussianVAR", function(object, x, history = NULL, log = FALSE) {
+setMethod("likelihood_increment", "GaussianVARModel", function(object, x, history = NULL, log = FALSE) {
   K        <- length(object@mean_pre)
   hist_mat <- .gvar_normalize_history(history, K)
   x_vec    <- as.numeric(x)
@@ -310,4 +356,33 @@ setMethod("likelihood_increment", "Model", function(object, x, history = NULL, l
     return(log(pmax(post, .Machine$double.eps)) - log(pmax(pre, .Machine$double.eps)))
   }
   pmax(post / pmax(pre, .Machine$double.eps), .Machine$double.eps)
+})
+
+# Method: likelihood_increment for BoundedModel
+# purpose: AGRAPA betting increment — 1 + lambda_t * (x_t - eta) where lambda_t
+#          is computed from the lagged history using the AGRAPA formula.
+#          When history is empty, lambda_t = 0 and the increment is 1.
+# inputs:
+#   object  = BoundedModel object
+#   x       = scalar observation in [0, 1]
+#   history = numeric vector of past observations X_1, ..., X_{t-1} (or NULL)
+#   log     = logical; return log-increment when TRUE
+# outputs:
+#   numeric scalar increment (or log-increment)
+setMethod("likelihood_increment", "BoundedModel", function(object, x, history = NULL, log = FALSE) {
+  eta <- object@eta
+  n_h <- if (is.null(history)) 0L else length(as.numeric(history))
+  if (n_h == 0L) {
+    lam <- 0
+  } else {
+    hist_vec <- as.numeric(history)
+    lag_mu   <- mean(hist_vec)
+    lag_sd   <- if (n_h > 1L) sqrt(mean((hist_vec - lag_mu)^2)) else 0
+    lag_sd   <- max(lag_sd, object@sd_min)
+    lam_raw  <- (lag_mu - eta) / (lag_sd^2 + (lag_mu - eta)^2)
+    cap      <- object@c / (eta + object@eps)
+    lam      <- max(0, min(lam_raw, cap))
+  }
+  inc <- max(1 + lam * (as.numeric(x) - eta), .Machine$double.eps)
+  if (log) base::log(inc) else inc
 })
