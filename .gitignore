@@ -15,3 +15,5 @@
 # misc editor/temp files
 *.swp
 *~
+/doc/
+/Meta/

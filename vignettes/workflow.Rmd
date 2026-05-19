@@ -49,16 +49,14 @@ tsm <- TSM(model)
 ```{r}
 # set up the data generating process for the data sequence, including the pre/post distributions and the change-point
 dgp <- DGP(
-  generator = default_gaussian_dgp,
-  pre_params = list(mean = 0, sd = 1), # parameters pre-change
-  post_params = list(mean = 1, sd = 1), # parameters post-change
+  GaussianModel(mean_pre = 0, sd_pre = 1, mean_post = 1, sd_post = 1),
   nu = 120, # change-point
   name = "iid-gaussian-change"
 )
 
 # generate data from the dgp
 N <- 250
-x <- generate_stream(dgp, N = N, K = 1)
+x <- generate_stream(dgp, N = N)
 head(x)
 ```
 
@@ -215,15 +213,16 @@ Note that when the alternative is mis-specified, the helper TSM does not grow an
 K <- 3 # number of streams
 N <- 100 # length of streams
 dgp_mvn <- DGP(
-  generator = default_multivariate_gaussian_dgp,
-  pre_params = list(mu = c(0, 0, 0), Sigma = diag(K)), # parameters pre-change
-  post_params = list(mu = c(1, 0, 0), Sigma = diag(K)), # parameters post-change
+  MultivariateGaussianModel(
+    mu_pre    = c(0, 0, 0), Sigma_pre  = diag(K),
+    mu_post   = c(1, 0, 0), Sigma_post = diag(K)
+  ),
   nu = 25, # change-point
   name = "mv-gauss-change"
 )
 
 # generate data from the dgp
-x <- generate_stream(dgp_mvn, N = N, K = K)
+x <- generate_stream(dgp_mvn, N = N)
 
 # true alternative: stream 1 shifts from 0 to 1; streams 2-3 unchanged
 model_true <- MultivariateGaussianModel(
@@ -301,18 +300,19 @@ product (assumes independence), average (valid under arbitrary dependence), and 
 (valid under arbitrary dependence, adapts weights online).
 
 ```{r combining}
-# ---- marginal models, one per stream, from the MVN DGP parameters ----
-mu_pre  <- dgp_mvn@pre_params$mu
-mu_post <- dgp_mvn@post_params$mu
-sd_pre  <- sqrt(diag(dgp_mvn@pre_params$Sigma))
-sd_post <- sqrt(diag(dgp_mvn@post_params$Sigma))
+# ---- marginal models, one per stream ----
+# K = 3 streams; Sigma_pre = Sigma_post = I_K, so marginal SD = 1 for all streams
+# Stream 1: mean shifts 0 -> 1; streams 2-3: unchanged
+mu_pre_marg  <- c(0, 0, 0)
+mu_post_marg <- c(1, 0, 0)
+sd_marg      <- 1
 
 marg_tsms <- lapply(seq_len(K), function(k) {
   TSM(GaussianModel(
-    mean_pre  = mu_pre[k],
-    sd_pre    = sd_pre[k],
-    mean_post = mu_post[k],
-    sd_post   = sd_post[k]
+    mean_pre  = mu_pre_marg[k],
+    sd_pre    = sd_marg,
+    mean_post = mu_post_marg[k],
+    sd_post   = sd_marg
   ))
 })
 
@@ -781,4 +781,239 @@ The two scenarios reveal a fundamental tradeoff:
 <!-- plot(returns, legend.loc = "topright") -->
 <!-- ``` -->
 
+
+## BoundedModel: distribution-free detection on approximately bounded streams
+
+Every example so far has supplied a fully-specified parametric model (Gaussian, VAR, Bernoulli).
+`BoundedModel` offers a distribution-free alternative: given only a null upper bound η on the
+pre-change mean — and data approximately supported on [0, 1] — it constructs a test
+supermartingale using *AGRAPA* bets (Waudby-Smith and Ramdas, 2024).  The bet λₜ at each step
+is approximately Kelly-optimal for the lagged empirical mean and variance, requiring no knowledge
+of the post-change distribution.
+
+We demonstrate on K = 2 independent Gaussian streams with **three distinct structural phases**:
+
+| Phase | Times | Distribution |
+|-------|-------|--------------|
+| 1 | t = 1 to 100 | N(0.3, var = 0.05) each stream |
+| 2 | t = 101 to 200 | N(0.3, var = 0.10) each stream — variance step, mean unchanged |
+| 3 | t = 201 to 1000 | Stream 1: N(0.4, var = 0.10); Stream 2: N(0.3, var = 0.10) |
+
+The null hypothesis is E[X_k] ≤ 0.3 per stream.  Phase 2 tests the detector's **specificity**:
+because the mean stays at η = 0.3, the TSM should remain flat despite the increased variance.
+The mean shift in Phase 3 is what we want to detect.
+
+> **Note on boundedness.** With variance 0.05 (SD ≈ 0.22) and mean 0.3, roughly 9% of Gaussian
+> draws fall below 0 and a negligible fraction above 1.  `BoundedModel` clamps the increment at
+> ε > 0 so the process stays positive; the validity guarantee weakens slightly for out-of-range
+> observations, but the detector remains practically reliable.
+
+### 1. Simulate data
+
+```{r bounded-data}
+set.seed(2026)
+N_bnd   <- 1000L
+nu_bnd  <- 200L   # mean change-point
+nu_var  <- 100L   # variance step-change (no mean change)
+K_bnd   <- 2L
+eta_bnd <- 0.3    # null upper bound on pre-change mean
+
+x_bnd <- matrix(NA_real_, nrow = N_bnd, ncol = K_bnd)
+
+# Phase 1: t = 1..100 — mean 0.3, variance 0.05
+x_bnd[seq_len(nu_var), ] <-
+  matrix(rnorm(nu_var * K_bnd, mean = 0.3, sd = sqrt(0.05)), nrow = nu_var)
+
+# Phase 2: t = 101..200 — variance increases to 0.1, mean unchanged
+x_bnd[seq(nu_var + 1L, nu_bnd), ] <-
+  matrix(rnorm((nu_bnd - nu_var) * K_bnd, mean = 0.3, sd = sqrt(0.10)),
+         nrow = nu_bnd - nu_var)
+
+# Phase 3: t = 201..1000 — stream 1 mean shifts to 0.4; stream 2 unchanged
+x_bnd[seq(nu_bnd + 1L, N_bnd), 1] <- rnorm(N_bnd - nu_bnd, mean = 0.4, sd = sqrt(0.10))
+x_bnd[seq(nu_bnd + 1L, N_bnd), 2] <- rnorm(N_bnd - nu_bnd, mean = 0.3, sd = sqrt(0.10))
+```
+
+### 2. Build per-stream BoundedModel TSMs
+
+A separate `BoundedModel(eta = 0.3)` is fitted to each stream.  `compute_increments` returns
+the AGRAPA log-increment sequence; `increments_to_tsm` accumulates these into the log-wealth
+path.
+
+```{r bounded-tsms}
+alpha_bnd <- 0.05   # global nominal level — ARL >= 20
+
+# Per-stream AGRAPA log-increments (N x K matrix)
+inc_bnd <- sapply(seq_len(K_bnd), function(k)
+  compute_increments(TSM(BoundedModel(eta = eta_bnd)), x_bnd[, k], log = TRUE))
+
+# Cumulative log-wealth paths (N x K matrix)
+tsm_bnd <- apply(inc_bnd, 2, function(inc) increments_to_tsm(inc, log = TRUE))
+```
+
+### 3. Joint detection (product combining)
+
+The streams are independent by construction, so the product combiner is valid: the combined
+log-increment sums both streams' log-increments.  Because stream 2 stays on the null, its
+log-increments average near zero and the combined signal is driven almost entirely by stream 1.
+
+```{r bounded-joint}
+# Combine log-increments multiplicatively (valid since streams are independent)
+inc_joint_bnd <- combine_streams(ProductCombiner(), inc_bnd, log = TRUE)
+
+sr_bnd        <- ShiryaevRobertsDetector(alpha = alpha_bnd, criterion = "ARL")
+det_joint_bnd <- run_detector(sr_bnd, inc_joint_bnd, log = TRUE)
+
+cat("Joint product S-R  (threshold = 1/alpha =", sr_bnd@threshold, ")\n")
+cat("  Stopping time:", det_joint_bnd$stopping_time, "\n")
+if (is.finite(det_joint_bnd$stopping_time))
+  cat("  Detection delay:", det_joint_bnd$stopping_time - nu_bnd, "steps\n")
+```
+
+```{r bounded-joint-fig, fig.width = 9, fig.height = 4, fig.cap = "BoundedModel joint detection (K = 2, product combining, alpha = 0.05). Left: bivariate streams clipped to [0, 1]; solid grey line marks eta = 0.3. Dashed grey lines mark the variance step (t = 100) and mean change-point (t = 200). Centre: per-stream log-TSM; both paths stay flat through the variance step, and only stream 1 rises after the mean shift. Right: joint product S-R log-statistic with log-threshold (dotted) and alarm (solid green vertical)."}
+
+s_cols <- c("steelblue", "firebrick")
+
+old_par <- par(mfrow = c(1, 3), mar = c(4.5, 4, 3, 0.5))
+
+# --- Panel 1: data on [0, 1] ---
+matplot(x_bnd, type = "l", lty = 1, lwd = 1.2, col = s_cols,
+        xlab = "time", ylab = expression(X[tk]),
+        ylim = c(0, 1),
+        main = "K = 2 streams  (clipped to [0, 1])")
+abline(h = eta_bnd, lty = 1, col = "gray60", lwd = 0.8)
+abline(v = nu_var,  lty = 2, col = "gray60")
+abline(v = nu_bnd,  lty = 2, col = "gray30")
+legend("topright", bty = "n", cex = 0.8,
+       legend = c("stream 1 (changes)", "stream 2 (null)",
+                  expression(eta == 0.3), "var step / change-pt"),
+       col  = c(s_cols, "gray60", "gray30"),
+       lty  = c(1, 1, 1, 2), lwd = c(1.2, 1.2, 0.8, 1))
+
+# --- Panel 2: per-stream log-TSM ---
+tsm_ylim <- range(tsm_bnd)
+matplot(tsm_bnd, type = "l", lty = 1, lwd = 2, col = s_cols,
+        xlab = "time", ylab = "log TSM wealth",
+        ylim = tsm_ylim,
+        main = "Per-stream log-TSM")
+abline(v = nu_var, lty = 2, col = "gray60")
+abline(v = nu_bnd, lty = 2, col = "gray30")
+legend("topleft", bty = "n", cex = 0.8,
+       legend = c("stream 1", "stream 2"),
+       col = s_cols, lty = 1, lwd = 2)
+
+# --- Panel 3: joint product S-R ---
+plot(det_joint_bnd$statistic, type = "l", lwd = 2, col = "darkgreen",
+     xlab = "time", ylab = expression(log~R[t]),
+     main = "Joint product S-R")
+abline(h = log(sr_bnd@threshold), lty = 3, col = "gray40")
+abline(v = nu_var, lty = 2, col = "gray60")
+abline(v = nu_bnd, lty = 2, col = "gray30")
+if (is.finite(det_joint_bnd$stopping_time)) {
+  abline(v = det_joint_bnd$stopping_time, lwd = 2, col = "darkgreen")
+  tau_label <- sprintf("alarm  t = %d  (delay %d)",
+                       as.integer(det_joint_bnd$stopping_time),
+                       as.integer(det_joint_bnd$stopping_time - nu_bnd))
+} else {
+  tau_label <- "no alarm within horizon"
+}
+legend("topleft", bty = "n", cex = 0.8,
+       legend = c(expression(log~R[t]), "log threshold", tau_label),
+       col = c("darkgreen", "gray40", "darkgreen"),
+       lty = c(1, 3, 1), lwd = c(2, 1, 2))
+
+par(old_par)
+```
+
+### 4. Localized detection
+
+Because the change is **sparse** (only stream 1 shifts), `LocalizedDetector` is the natural
+tool.  Each of the K marginal S-R detectors runs at level α/K, preserving the global ARL ≥ 1/α
+by the union bound.  The per-stream stopping times immediately identify which stream changed.
+
+```{r bounded-localized}
+ld_bnd      <- LocalizedDetector(K = K_bnd, alpha = alpha_bnd, criterion = "ARL")
+det_loc_bnd <- run_detector(ld_bnd, inc_bnd, log = TRUE)
+
+stop_loc_bnd <- sapply(det_loc_bnd$stream_results, function(r) r$stopping_time)
+stat_loc_bnd <- sapply(det_loc_bnd$stream_results, function(r) r$statistic)
+
+loc_thresh   <- ld_bnd@detectors[[1L]]@threshold   # K / alpha = 40
+cat("Localized S-R  (marginal threshold = K/alpha =", loc_thresh, ")\n")
+for (k in seq_len(K_bnd)) {
+  cat(sprintf("  Stream %d: %s\n", k,
+    if (is.finite(stop_loc_bnd[k]))
+      sprintf("alarm at t = %d  (delay %d)",
+              as.integer(stop_loc_bnd[k]),
+              as.integer(stop_loc_bnd[k] - nu_bnd))
+    else "no alarm within horizon"))
+}
+cat("  Global stopping time:", det_loc_bnd$stopping_time,
+    "  (first alarm stream:", det_loc_bnd$first_alarm_stream, ")\n")
+```
+
+```{r bounded-localized-fig, fig.width = 9, fig.height = 4, fig.cap = "BoundedModel localized detection (K = 2, Bonferroni-corrected marginal threshold = K/alpha = 40). Left: data streams. Centre: per-stream log-TSM. Right: per-stream localized S-R log-statistics; stream 1 climbs to the marginal threshold while stream 2 stays flat, immediately pinpointing the changed stream."}
+
+loc_thresh_log_bnd <- log(loc_thresh)
+
+old_par <- par(mfrow = c(1, 3), mar = c(4.5, 4, 3, 0.5))
+
+# --- Panel 1: data ---
+matplot(x_bnd, type = "l", lty = 1, lwd = 1.2, col = s_cols,
+        xlab = "time", ylab = expression(X[tk]),
+        ylim = c(0, 1),
+        main = "K = 2 streams  (clipped to [0, 1])")
+abline(h = eta_bnd, lty = 1, col = "gray60", lwd = 0.8)
+abline(v = nu_var,  lty = 2, col = "gray60")
+abline(v = nu_bnd,  lty = 2, col = "gray30")
+legend("topright", bty = "n", cex = 0.8,
+       legend = c("stream 1 (changes)", "stream 2 (null)",
+                  expression(eta == 0.3), "var step / change-pt"),
+       col  = c(s_cols, "gray60", "gray30"),
+       lty  = c(1, 1, 1, 2), lwd = c(1.2, 1.2, 0.8, 1))
+
+# --- Panel 2: per-stream log-TSM ---
+matplot(tsm_bnd, type = "l", lty = 1, lwd = 2, col = s_cols,
+        xlab = "time", ylab = "log TSM wealth",
+        ylim = tsm_ylim,
+        main = "Per-stream log-TSM")
+abline(v = nu_var, lty = 2, col = "gray60")
+abline(v = nu_bnd, lty = 2, col = "gray30")
+legend("topleft", bty = "n", cex = 0.8,
+       legend = c("stream 1", "stream 2"),
+       col = s_cols, lty = 1, lwd = 2)
+
+# --- Panel 3: per-stream localized S-R ---
+matplot(stat_loc_bnd, type = "l", lty = 1, lwd = 2, col = s_cols,
+        xlab = "time", ylab = expression(log~R[t]^{(k)}),
+        main = sprintf("Localized S-R  (marginal thr = %g)", loc_thresh))
+abline(h = loc_thresh_log_bnd, lty = 3, col = "gray40")
+abline(v = nu_var, lty = 2, col = "gray60")
+abline(v = nu_bnd, lty = 2, col = "gray30")
+for (k in seq_len(K_bnd))
+  if (is.finite(stop_loc_bnd[k]))
+    abline(v = stop_loc_bnd[k], lwd = 2, col = s_cols[k])
+legend("topleft", bty = "n", cex = 0.8,
+       legend = c("stream 1", "stream 2", "log threshold"),
+       col = c(s_cols, "gray40"), lty = c(1, 1, 3), lwd = c(2, 2, 1))
+
+par(old_par)
+```
+
+The two figures highlight several properties of the AGRAPA-based detector:
+
+- **Insensitivity to the variance step (t = 100).** The AGRAPA bet λₜ is approximately zero
+  whenever the empirical mean is near η = 0.3, regardless of variance.  Both TSMs remain flat
+  through Phase 2, confirming that the detector does not produce spurious evidence for a
+  *distributional* change that leaves the mean unchanged.
+
+- **Progressive evidence accumulation (Phase 3).** After the mean shift at ν = 200, stream 1's
+  AGRAPA bet grows as the empirical mean drifts above η.  The log-wealth path rises
+  progressively; the S-R statistic inherits this accumulation, crossing the threshold after a
+  delay that reflects the signal-to-noise ratio of the 0.1-unit mean shift.
+
+- **Sparse-change localization.** Stream 2's log-TSM and localized S-R remain flat throughout
+  Phase 3 — the null is still satisfied, so no evidence accumulates.  The `LocalizedDetector`
+  therefore fires exclusively on stream 1, identifying it as the changed stream while providing
+  a formal ARL guarantee on the global false-alarm rate.
 

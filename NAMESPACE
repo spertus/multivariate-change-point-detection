@@ -46,8 +46,6 @@ export(run_detector)
 export(combine_streams)
 export(generate_stream)
 export(expand_dgp_grid)
-export(default_gaussian_dgp)
-export(default_multivariate_gaussian_dgp)
 export(run_simulation)
 
 exportMethods(model_density)

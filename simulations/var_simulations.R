@@ -22,7 +22,6 @@
 # ────────────────────────────────────────────────────────────────────────────
 
 library(multichangepoints)
-library(mvtnorm)   # already imported by multichangepoints
 
 # ── 0. Mode switch ──────────────────────────────────────────────────────────
 
@@ -74,45 +73,24 @@ param_grid <- do.call(expand.grid,
 N_OBS <- if (RUN_FULL) 3000L else 1000L
 N_REP <- if (RUN_FULL) 500L  else 100L
 
-# ── 3. Data generation ──────────────────────────────────────────────────────
-
-# Generate an N_total x K VAR(p) path with a mean shift at time nu.
-# The post-change segment is initialised from the end of the pre-change segment.
-# phi_scalars: numeric vector of length p (applied equally to all K streams)
-.generate_var_path <- function(N_total, K, mu_pre, mu_post,
-                                nu, phi_scalars, sigma_mat) {
-  p     <- length(phi_scalars)
-  N_pad <- N_total + p                    # first p rows are burn-in
-  x     <- matrix(0, nrow = N_pad, ncol = K)
-  for (i in seq_len(p)) x[i, ] <- mu_pre # initialise at pre-change mean
-
-  for (t in (p + 1L):N_pad) {
-    obs_idx  <- t - p                     # observation index 1..N_total
-    mu_now   <- if (obs_idx <= nu) mu_pre else mu_post
-    cond_mu  <- mu_now
-    for (j in seq_len(p))
-      cond_mu <- cond_mu + phi_scalars[[j]] * (x[t - j, ] - mu_now)
-    x[t, ] <- cond_mu + as.numeric(rmvnorm(1, sigma = sigma_mat))
-  }
-  x[(p + 1L):N_pad, , drop = FALSE]
-}
-
-# ── 4. Single-replicate runner ───────────────────────────────────────────────
+# ── 3. Single-replicate runner ───────────────────────────────────────────────
 
 # Returns a named list: stopping_time, false_alarm, delay
-.run_rep <- function(N, K, nu, mu_pre_vec, mu_post_vec,
-                     phi_scalars, sigma_mat, eta_vec,
+.run_rep <- function(N, K, nu, mu0, mu1, phi_scalars, sigma_mat, eta_vec,
                      alpha, criterion, detector_type, combine_method) {
-  x <- .generate_var_path(N, K, mu_pre_vec, mu_post_vec,
-                           nu, phi_scalars, sigma_mat)
+  Phi_lst   <- lapply(phi_scalars, function(ph) ph * diag(K))
+  dgp_model <- GaussianVARModel(
+    Phi_pre   = Phi_lst, Sigma_pre  = sigma_mat, mean_pre  = mu0,
+    Phi_post  = Phi_lst, Sigma_post = sigma_mat, mean_post = mu1
+  )
+  x <- generate_stream(DGP(dgp_model, nu = nu), N = N)
+  if (is.null(dim(x))) x <- matrix(x, ncol = 1L)
 
   # ── compute per-stream or joint increments ──
   if (detector_type %in% c("oracle", "misspec")) {
-    mu_use  <- if (detector_type == "oracle") mu_post_vec
-               else (mu_pre_vec + mu_post_vec) / 2
-    Phi_lst <- lapply(phi_scalars, function(ph) ph * diag(K))
-    m       <- GaussianVARModel(
-      Phi_pre   = Phi_lst, Sigma_pre = sigma_mat, mean_pre  = mu_pre_vec,
+    mu_use <- if (detector_type == "oracle") mu1 else (mu0 + mu1) / 2
+    m <- GaussianVARModel(
+      Phi_pre   = Phi_lst, Sigma_pre  = sigma_mat, mean_pre  = mu0,
       Phi_post  = Phi_lst, Sigma_post = sigma_mat, mean_post = mu_use
     )
     inc <- compute_increments(TSM(m), x, log = TRUE)
@@ -141,13 +119,13 @@ N_REP <- if (RUN_FULL) 500L  else 100L
   tau <- out$stopping_time
 
   list(
-    stopping_time   = tau,
-    false_alarm     = is.finite(tau) && tau <= nu,
-    delay           = if (is.finite(tau) && tau > nu) tau - nu else NA_real_
+    stopping_time = tau,
+    false_alarm   = is.finite(tau) && tau <= nu,
+    delay         = if (is.finite(tau) && tau > nu) tau - nu else NA_real_
   )
 }
 
-# ── 5. Main simulation loop ──────────────────────────────────────────────────
+# ── 4. Main simulation loop ──────────────────────────────────────────────────
 
 results <- vector("list", nrow(param_grid))
 
@@ -157,16 +135,15 @@ for (i in seq_len(nrow(param_grid))) {
   p    <- as.integer(row$p)
   nu   <- as.integer(row$nu)
 
-  phi_sc    <- AR_COEFS[[as.character(p)]]
-  mu0       <- rep(MU_PRE, K)
-  eta       <- rep(MU_PRE, K)   # null mean = pre-change mean
+  phi_sc <- AR_COEFS[[as.character(p)]]
+  mu0    <- rep(MU_PRE, K)
+  eta    <- rep(MU_PRE, K)   # null mean = pre-change mean
 
   # Post-change mean vector
-  if (isTRUE(row$sparse)) {
-    mu1       <- mu0
-    mu1[1L]   <- mu0[1L] + row$delta_norm
+  mu1 <- if (isTRUE(row$sparse)) {
+    m <- mu0; m[1L] <- mu0[1L] + row$delta_norm; m
   } else {
-    mu1 <- mu0 + row$delta_norm / sqrt(K)
+    mu0 + row$delta_norm / sqrt(K)
   }
 
   # Innovation covariance
@@ -183,12 +160,10 @@ for (i in seq_len(nrow(param_grid))) {
   # Detector variants to run for this condition
   det_variants <- list(
     list(type = "oracle",  combine = "joint"),
-    list(type = "misspec", combine = "joint")
+    list(type = "misspec", combine = "joint"),
+    list(type = "bounded", combine = "average")
   )
-  # Bounded combiners: average always; product only under independence; UP when K > 1
-  det_variants <- c(det_variants,
-    list(list(type = "bounded", combine = "average")))
-  if (K > 1L && (isTRUE(row$independent) || K == 1L))
+  if (K > 1L && isTRUE(row$independent))
     det_variants <- c(det_variants, list(list(type = "bounded", combine = "product")))
   if (K > 1L)
     det_variants <- c(det_variants, list(list(type = "bounded", combine = "up")))
@@ -206,8 +181,8 @@ for (i in seq_len(nrow(param_grid))) {
           N              = N_OBS,
           K              = K,
           nu             = nu,
-          mu_pre_vec     = mu0,
-          mu_post_vec    = mu1,
+          mu0            = mu0,
+          mu1            = mu1,
           phi_scalars    = phi_sc,
           sigma_mat      = Sig,
           eta_vec        = eta,
@@ -222,9 +197,9 @@ for (i in seq_len(nrow(param_grid))) {
       )
     }
 
-    stops   <- vapply(reps, `[[`, numeric(1), "stopping_time")
-    delays  <- vapply(reps, `[[`, numeric(1), "delay")
-    fa      <- vapply(reps, `[[`, logical(1), "false_alarm")
+    stops  <- vapply(reps, `[[`, numeric(1),  "stopping_time")
+    delays <- vapply(reps, `[[`, numeric(1),  "delay")
+    fa     <- vapply(reps, `[[`, logical(1),  "false_alarm")
 
     cond_rows[[d]] <- data.frame(
       p           = p,
@@ -237,7 +212,7 @@ for (i in seq_len(nrow(param_grid))) {
       independent = row$independent,
       detector    = dv$type,
       combine     = dv$combine,
-      ARL         = mean(stops, na.rm = TRUE),
+      ARL         = mean(stops,  na.rm = TRUE),
       CAD         = mean(delays, na.rm = TRUE),
       PFA         = mean(fa,     na.rm = TRUE),
       power       = mean(!is.na(delays)),
@@ -254,9 +229,15 @@ for (i in seq_len(nrow(param_grid))) {
 
 results <- do.call(rbind, results)
 
-# ── 6. Save ──────────────────────────────────────────────────────────────────
+# ── 5. Save ──────────────────────────────────────────────────────────────────
 
-out_dir  <- "simulation_output"
+# Locate project root by climbing until DESCRIPTION is found
+.pkg_root <- local({
+  d <- normalizePath(getwd())
+  while (!file.exists(file.path(d, "DESCRIPTION")) && d != dirname(d)) d <- dirname(d)
+  d
+})
+out_dir <- file.path(.pkg_root, "simulation_output")
 if (!dir.exists(out_dir)) dir.create(out_dir)
 saveRDS(results, file.path(out_dir, "var_sim_results.rds"))
 write.csv(results, file.path(out_dir, "var_sim_results.csv"), row.names = FALSE)

@@ -49,15 +49,10 @@ make_tsm_paths <- function(n_paths = 6, N = 240, nu = 120,
   model <- GaussianModel(mean_pre = 0, sd_pre = 1,
                          mean_post = mean_post, sd_post = 1)
   tsm <- TSM(model)
-  dgp <- DGP(
-    generator = default_gaussian_dgp,
-    pre_params = list(mean = 0, sd = 1),
-    post_params = list(mean = mean_post, sd = 1),
-    nu = nu
-  )
+  dgp <- DGP(model, nu = nu)
   paths <- vector("list", n_paths)
   for (i in seq_len(n_paths)) {
-    x <- generate_stream(dgp, N = N, K = 1)
+    x <- generate_stream(dgp, N = N)
     z <- compute_tsm(tsm, x, log = TRUE)
     paths[[i]] <- data.frame(t = seq_len(N), logM = z, path = factor(i))
   }
@@ -88,11 +83,8 @@ make_sr_panel <- function(N = 240, nu = 120, mean_post = 0.4,
   model <- GaussianModel(mean_pre = 0, sd_pre = 1,
                          mean_post = mean_post, sd_post = 1)
   tsm <- TSM(model)
-  dgp <- DGP(generator = default_gaussian_dgp,
-             pre_params = list(mean = 0, sd = 1),
-             post_params = list(mean = mean_post, sd = 1),
-             nu = nu)
-  x <- generate_stream(dgp, N = N, K = 1)
+  dgp <- DGP(model, nu = nu)
+  x   <- generate_stream(dgp, N = N)
   inc <- compute_increments(tsm, x, log = TRUE)
 
   rows <- lapply(alphas, function(a) {
@@ -132,11 +124,8 @@ make_spending_panel <- function(N = 240, nu = 120, mean_post = 0.4,
   model <- GaussianModel(mean_pre = 0, sd_pre = 1,
                          mean_post = mean_post, sd_post = 1)
   tsm <- TSM(model)
-  dgp <- DGP(generator = default_gaussian_dgp,
-             pre_params = list(mean = 0, sd = 1),
-             post_params = list(mean = mean_post, sd = 1),
-             nu = nu)
-  x <- generate_stream(dgp, N = N, K = 1)
+  dgp <- DGP(model, nu = nu)
+  x   <- generate_stream(dgp, N = N)
   inc <- compute_increments(tsm, x, log = TRUE)
 
   schedules <- list(
@@ -202,12 +191,13 @@ make_sparse_vs_dense <- function(N = 200, nu = 100, K = 6, Delta = 1.5,
 
   mk <- function(mu_post, label) {
     dgp <- DGP(
-      generator = default_multivariate_gaussian_dgp,
-      pre_params = list(mu = mu_pre, Sigma = diag(K)),
-      post_params = list(mu = mu_post, Sigma = diag(K)),
+      MultivariateGaussianModel(
+        mu_pre = mu_pre, Sigma_pre = diag(K),
+        mu_post = mu_post, Sigma_post = diag(K)
+      ),
       nu = nu
     )
-    x <- generate_stream(dgp, N = N, K = K)
+    x <- generate_stream(dgp, N = N)
     list(x = x, label = label)
   }
   list(sparse = mk(mu_sparse, "sparse change (one stream)"),
@@ -358,13 +348,15 @@ run_regret_pilot <- function(K = 6, N = 300, nu = 100, alpha = 0.001,
   for (m in mags) {
     mu_post <- rep(0, K)
     if (sparse) mu_post[1] <- m else mu_post[] <- m / sqrt(K)
-    dgp <- DGP(generator = default_multivariate_gaussian_dgp,
-               pre_params  = list(mu = rep(0, K), Sigma = diag(K)),
-               post_params = list(mu = mu_post, Sigma = diag(K)),
-               nu = nu)
+    dgp <- DGP(
+      MultivariateGaussianModel(
+        mu_pre = rep(0, K), Sigma_pre = diag(K),
+        mu_post = mu_post, Sigma_post = diag(K)
+      ),
+      nu = nu)
     for (nm in names(combiners)) {
       delays <- replicate(n_rep, {
-        x <- generate_stream(dgp, N = N, K = K)
+        x <- generate_stream(dgp, N = N)
         inc_mat <- sapply(seq_len(K), function(k)
           compute_increments(marg_tsms[[k]], x[, k], log = TRUE))
         inc <- combine_streams(combiners[[nm]], inc_mat, log = TRUE)
