@@ -157,109 +157,175 @@ setMethod("update_detector", "CUSUMDetector", function(object, evidence, t, stat
 })
 
 # Class: LocalizedDetector
-# purpose: K independent ShiryaevRoberts detectors with Bonferroni-corrected
-#          levels (alpha/K each) for simultaneous per-stream localization.
-#          Controls global ARL >= 1/alpha (via S-R martingale + Bonferroni) and
-#          global PFA <= alpha (by union bound). Returns per-stream results so
-#          that the specific stream(s) and time(s) of change can be identified.
+# purpose: K independent S-R recursions with a joint spending process (Theorem 3,
+#          Spertus et al. 2026). Each stream k runs the recursion
+#            R_tk = Lambda_tk * (R_{t-1,k} + invest_tk)
+#          with a shared threshold 1/alpha, where invest_tk is drawn from the N_sched x K
+#          `invest` matrix:
+#            ARL (spending allowance gamma_t): sum_k gamma_tk = 1 at each t;
+#                recycles the last row beyond N_sched.
+#            PFA (joint spending schedule pi_t):  sum_t sum_k pi_tk = 1;
+#                uses zero investment beyond N_sched.
+#          The default is the Bonferroni allocation (Proposition 3): gamma_tk = 1/K for ARL,
+#          pi_tk = pi_t_tilde / K for PFA where pi_tilde is a geometric schedule.
 # slots:
-#   detectors = length-K list of ShiryaevRobertsDetector objects, each at level alpha/K
+#   K         = positive integer number of streams
 #   alpha     = numeric scalar global nominal level
 #   criterion = character, one of c("ARL", "PFA")
+#   threshold = numeric scalar (default 1/alpha)
+#   invest    = numeric N_sched x K matrix of per-stream investments
 setClass("LocalizedDetector",
-         slots = c(detectors = "list", alpha = "numeric", criterion = "character"))
+         slots = c(K         = "integer",
+                   alpha     = "numeric",
+                   criterion = "character",
+                   threshold = "numeric",
+                   invest    = "matrix"))
 
 # Constructor: LocalizedDetector
 # inputs:
 #   K               = positive integer number of streams
 #   alpha           = numeric scalar global nominal level
 #   criterion       = character in c("ARL", "PFA")
-#   spending        = optional numeric schedule for PFA recursion (passed to each marginal detector)
-#   threshold       = optional numeric threshold; defaults to K/alpha (= 1/(alpha/K))
+#   allowance       = ARL only: NULL (uniform 1/K; Bonferroni), a length-K numeric vector
+#                     (constant allocation), or an N x K matrix with rows summing to 1.
+#   spending        = PFA only: NULL (geometric schedule split K ways), a length-N numeric
+#                     vector (same schedule per stream, normalised and split K ways), or an
+#                     N x K matrix with all entries summing to 1 (joint spending schedule).
+#   threshold       = optional override (default 1/alpha)
 #   geometric_p     = geometric parameter for auto-generated PFA spending schedule
-#   spending_length = length of auto-generated spending schedule
-#   multiple_alarms = logical; whether each marginal detector resets and re-alarms
+#   spending_length = length of auto-generated PFA spending schedule
 # outputs:
 #   LocalizedDetector object
 LocalizedDetector <- function(K,
                                alpha           = 0.05,
                                criterion       = c("ARL", "PFA"),
-                               spending        = numeric(0),
+                               allowance       = NULL,
+                               spending        = NULL,
                                threshold       = NULL,
                                geometric_p     = 0.01,
-                               spending_length = 1000,
-                               multiple_alarms = FALSE) {
+                               spending_length = 1000) {
   K <- as.integer(K)
-  if (length(K) != 1L || K < 1L) {
-    stop("`K` must be a positive integer (number of marginal streams).", call. = FALSE)
-  }
+  if (length(K) != 1L || K < 1L)
+    stop("`K` must be a positive integer.", call. = FALSE)
   criterion <- match.arg(criterion)
+  if (is.null(threshold)) threshold <- 1 / alpha
 
-  alpha_k <- alpha / K
-  dets <- lapply(seq_len(K), function(k) {
-    ShiryaevRobertsDetector(
-      alpha           = alpha_k,
-      criterion       = criterion,
-      spending        = spending,
-      threshold       = threshold,
-      geometric_p     = geometric_p,
-      spending_length = spending_length,
-      multiple_alarms = multiple_alarms,
-      name            = paste0("stream-", k)
-    )
-  })
+  if (criterion == "ARL") {
+    if (is.null(allowance)) {
+      invest <- matrix(rep(1 / K, K), nrow = 1L, ncol = K)
+    } else {
+      if (is.numeric(allowance) && !is.matrix(allowance))
+        allowance <- matrix(allowance, nrow = 1L)
+      invest <- as.matrix(allowance)
+      if (ncol(invest) != K)
+        stop("`allowance` must have K columns.", call. = FALSE)
+      if (any(invest < -1e-12))
+        stop("`allowance` must be non-negative.", call. = FALSE)
+      if (any(abs(rowSums(invest) - 1) > 1e-8))
+        stop("`allowance` rows must each sum to 1.", call. = FALSE)
+    }
+  } else {
+    if (is.null(spending)) {
+      sched  <- .geometric_spending(spending_length, p = geometric_p)
+      sched  <- sched / sum(sched)
+      invest <- matrix(rep(sched / K, K), nrow = spending_length, ncol = K)
+    } else if (is.numeric(spending) && !is.matrix(spending)) {
+      spending <- as.numeric(spending)
+      spending <- spending / sum(spending)
+      invest   <- matrix(rep(spending / K, K), nrow = length(spending), ncol = K)
+    } else {
+      invest <- as.matrix(spending)
+      if (ncol(invest) != K)
+        stop("`spending` must have K columns.", call. = FALSE)
+      if (any(invest < -1e-12))
+        stop("`spending` must be non-negative.", call. = FALSE)
+      if (abs(sum(invest) - 1) > 1e-8)
+        stop("`spending` must sum to 1.", call. = FALSE)
+    }
+  }
 
   new("LocalizedDetector",
-      detectors = dets,
+      K         = K,
       alpha     = as.numeric(alpha),
-      criterion = criterion)
+      criterion = criterion,
+      threshold = as.numeric(threshold),
+      invest    = invest)
 }
 
 # Method: run_detector for LocalizedDetector
 # inputs:
 #   object   = LocalizedDetector object
-#   evidence = numeric N-by-K matrix of per-stream increments (or log-increments if log=TRUE);
-#              column k feeds the k-th marginal ShiryaevRobertsDetector
+#   evidence = numeric N-by-K matrix of per-stream increments (or log-increments if log=TRUE)
 #   log      = logical; if TRUE interpret evidence as log-increments
 # outputs:
 #   list with elements:
-#     stream_results     = named list of K individual run_detector outputs (statistic,
-#                          stopping_time, alarm_times, alarm, criterion, log)
-#     stopping_time      = global stopping time: min of marginal stopping times (Inf if none)
-#     first_alarm_stream = integer index of the first-alarming stream (NA_integer_ if none)
+#     stream_results     = named list of K per-stream results (statistic, stopping_time, alarm)
+#     stopping_time      = global stopping time: min of per-stream stopping times (Inf if none)
+#     first_alarm_stream = integer index of first-alarming stream (NA_integer_ if none)
 #     alarm              = logical; TRUE if any stream alarmed
 #     criterion          = character criterion used
 #     log                = logical
 setMethod("run_detector", "LocalizedDetector", function(object, evidence, log = FALSE) {
-  if (!is.matrix(evidence) || !is.numeric(evidence)) {
+  if (!is.matrix(evidence) || !is.numeric(evidence))
     stop("`evidence` must be a numeric N-by-K matrix for a LocalizedDetector.", call. = FALSE)
-  }
-  K <- length(object@detectors)
-  if (ncol(evidence) != K) {
+  N <- nrow(evidence)
+  K <- object@K
+  if (ncol(evidence) != K)
     stop(sprintf("`evidence` must have %d column(s) (one per stream).", K), call. = FALSE)
-  }
-  if (!log && any(evidence < 0, na.rm = TRUE)) {
+  if (!log && any(evidence < 0, na.rm = TRUE))
     stop("evidence has negative entries but log is FALSE.", call. = FALSE)
+
+  is_pfa     <- object@criterion == "PFA"
+  invest     <- object@invest
+  n_sched    <- nrow(invest)
+  log_thresh <- log(object@threshold)
+
+  log_stat  <- matrix(-Inf, nrow = N, ncol = K)
+  log_state <- rep(-Inf, K)
+  stop_times <- rep(Inf, K)
+
+  for (t in seq_len(N)) {
+    inv_t <- if (is_pfa) {
+      if (t <= n_sched) invest[t, ] else rep(0, K)
+    } else {
+      invest[min(t, n_sched), ]
+    }
+
+    log_inc <- if (log) evidence[t, ] else log(pmax(evidence[t, ], .Machine$double.eps))
+    log_inv <- ifelse(inv_t <= 0, -Inf, log(inv_t))
+
+    # vectorised two-argument logsumexp: logsumexp(log_state, log_inv)
+    mx      <- pmax(log_state, log_inv)
+    log_sum <- ifelse(is.finite(mx), mx + log1p(exp(pmin(log_state, log_inv) - mx)), mx)
+
+    log_state    <- log_inc + log_sum
+    log_stat[t, ] <- log_state
+
+    new_alarms <- which(log_state >= log_thresh & is.infinite(stop_times))
+    if (length(new_alarms) > 0L) stop_times[new_alarms] <- t
   }
 
+  global_stop  <- min(stop_times)
+  global_alarm <- is.finite(global_stop)
+  first_stream <- if (global_alarm) which.min(stop_times) else NA_integer_
+
   stream_results <- lapply(seq_len(K), function(k) {
-    run_detector(object@detectors[[k]], evidence = evidence[, k], log = log)
+    stat <- log_stat[, k]
+    if (!log) stat <- exp(stat)
+    list(statistic     = stat,
+         stopping_time = stop_times[k],
+         alarm         = is.finite(stop_times[k]),
+         criterion     = object@criterion,
+         log           = log)
   })
   names(stream_results) <- paste0("stream_", seq_len(K))
 
-  stop_times   <- vapply(stream_results, function(r) r$stopping_time, numeric(1L))
-  global_stop  <- min(stop_times)
-  global_alarm <- is.finite(global_stop)
-  first_stream <- if (global_alarm) unname(which(stop_times == global_stop)[1L]) else NA_integer_
-
-  list(
-    stream_results     = stream_results,
-    stopping_time      = global_stop,
-    first_alarm_stream = first_stream,
-    alarm              = global_alarm,
-    criterion          = object@criterion,
-    log                = log
-  )
+  list(stream_results     = stream_results,
+       stopping_time      = global_stop,
+       first_alarm_stream = first_stream,
+       alarm              = global_alarm,
+       criterion          = object@criterion,
+       log                = log)
 })
 
 # Method: run_detector for Detector

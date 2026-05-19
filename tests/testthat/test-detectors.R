@@ -126,22 +126,60 @@ test_that("S-R PFA recursion injects precomputed pi_t terms with fixed threshold
 
 # ---- LocalizedDetector tests -----------------------------------------------
 
-test_that("LocalizedDetector constructor sets marginal alpha to alpha/K", {
+test_that("LocalizedDetector constructor stores K, alpha, criterion, threshold, invest", {
   ld <- LocalizedDetector(K = 4, alpha = 0.08, criterion = "ARL")
-  expect_equal(length(ld@detectors), 4L)
-  for (k in seq_len(4)) {
-    expect_equal(ld@detectors[[k]]@alpha, 0.08 / 4)
-    expect_equal(ld@detectors[[k]]@threshold, 4 / 0.08)
-    expect_true(is(ld@detectors[[k]], "ShiryaevRobertsDetector"))
-  }
+  expect_equal(ld@K, 4L)
   expect_equal(ld@alpha, 0.08)
   expect_equal(ld@criterion, "ARL")
+  expect_equal(ld@threshold, 1 / 0.08)
+  # default uniform Bonferroni allowance: 1-row matrix with every entry = 1/K
+  expect_equal(ld@invest, matrix(rep(1/4, 4), nrow = 1L, ncol = 4L))
 })
 
 test_that("LocalizedDetector constructor respects custom threshold", {
   ld <- LocalizedDetector(K = 2, alpha = 0.1, criterion = "ARL", threshold = 50)
-  expect_equal(ld@detectors[[1]]@threshold, 50)
-  expect_equal(ld@detectors[[2]]@threshold, 50)
+  expect_equal(ld@threshold, 50)
+})
+
+test_that("LocalizedDetector ARL: custom allowance matrix is stored and validated", {
+  # Non-uniform but valid: stream 1 gets 70%, stream 2 gets 30%
+  alloc <- matrix(c(0.7, 0.3), nrow = 1L)
+  ld <- LocalizedDetector(K = 2, alpha = 0.05, criterion = "ARL", allowance = alloc)
+  expect_equal(ld@invest, alloc)
+  # Row-sums-not-1 should error
+  bad <- matrix(c(0.6, 0.3), nrow = 1L)
+  expect_error(LocalizedDetector(K = 2, alpha = 0.05, criterion = "ARL", allowance = bad),
+               "sum to 1")
+})
+
+test_that("LocalizedDetector PFA: joint spending matrix is validated", {
+  N <- 50
+  # Valid N x K joint schedule
+  base   <- matrix(runif(N * 2), nrow = N, ncol = 2)
+  base   <- base / sum(base)
+  ld <- LocalizedDetector(K = 2, alpha = 0.05, criterion = "PFA", spending = base)
+  expect_equal(ld@invest, base)
+  # Sum != 1 should error
+  bad <- base * 2
+  expect_error(LocalizedDetector(K = 2, alpha = 0.05, criterion = "PFA", spending = bad),
+               "sum to 1")
+})
+
+test_that("LocalizedDetector uniform ARL gives same stopping times as manual Bonferroni", {
+  # Manual Bonferroni: R_t = Lambda * (R_{t-1} + 1), threshold K/alpha
+  # New: R_t = Lambda * (R_{t-1} + 1/K), threshold 1/alpha  — mathematically identical
+  K <- 2; n <- 200; alpha <- 0.05; Lambda <- 1.3
+  inc <- matrix(rep(Lambda, n * K), nrow = n, ncol = K)
+  ld  <- LocalizedDetector(K = K, alpha = alpha, criterion = "ARL")
+  out <- run_detector(ld, evidence = inc)
+  # Manual computation with allowance 1/K and threshold 1/alpha
+  R <- 0
+  manual_stop <- Inf
+  for (t in seq_len(n)) {
+    R <- Lambda * (R + 1/K)
+    if (R >= 1/alpha) { manual_stop <- t; break }
+  }
+  expect_equal(out$stream_results$stream_1$stopping_time, manual_stop)
 })
 
 test_that("LocalizedDetector run_detector returns K stream results", {

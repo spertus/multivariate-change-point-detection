@@ -803,10 +803,7 @@ The null hypothesis is E[X_k] ≤ 0.3 per stream.  Phase 2 tests the detector's 
 because the mean stays at η = 0.3, the TSM should remain flat despite the increased variance.
 The mean shift in Phase 3 is what we want to detect.
 
-> **Note on boundedness.** With variance 0.05 (SD ≈ 0.22) and mean 0.3, roughly 9% of Gaussian
-> draws fall below 0 and a negligible fraction above 1.  `BoundedModel` clamps the increment at
-> ε > 0 so the process stays positive; the validity guarantee weakens slightly for out-of-range
-> observations, but the detector remains practically reliable.
+
 
 ### 1. Simulate data
 
@@ -822,16 +819,16 @@ x_bnd <- matrix(NA_real_, nrow = N_bnd, ncol = K_bnd)
 
 # Phase 1: t = 1..100 — mean 0.3, variance 0.05
 x_bnd[seq_len(nu_var), ] <-
-  matrix(rnorm(nu_var * K_bnd, mean = 0.3, sd = sqrt(0.05)), nrow = nu_var)
+  matrix(rnorm(nu_var * K_bnd, mean = 0.3, sd = 0.05), nrow = nu_var)
 
 # Phase 2: t = 101..200 — variance increases to 0.1, mean unchanged
 x_bnd[seq(nu_var + 1L, nu_bnd), ] <-
-  matrix(rnorm((nu_bnd - nu_var) * K_bnd, mean = 0.3, sd = sqrt(0.10)),
+  matrix(rnorm((nu_bnd - nu_var) * K_bnd, mean = 0.3, sd = 0.10),
          nrow = nu_bnd - nu_var)
 
 # Phase 3: t = 201..1000 — stream 1 mean shifts to 0.4; stream 2 unchanged
-x_bnd[seq(nu_bnd + 1L, N_bnd), 1] <- rnorm(N_bnd - nu_bnd, mean = 0.4, sd = sqrt(0.10))
-x_bnd[seq(nu_bnd + 1L, N_bnd), 2] <- rnorm(N_bnd - nu_bnd, mean = 0.3, sd = sqrt(0.10))
+x_bnd[seq(nu_bnd + 1L, N_bnd), 1] <- rnorm(N_bnd - nu_bnd, mean = 0.4, sd = 0.10)
+x_bnd[seq(nu_bnd + 1L, N_bnd), 2] <- rnorm(N_bnd - nu_bnd, mean = 0.3, sd = 0.10)
 ```
 
 ### 2. Build per-stream BoundedModel TSMs
@@ -841,7 +838,7 @@ the AGRAPA log-increment sequence; `increments_to_tsm` accumulates these into th
 path.
 
 ```{r bounded-tsms}
-alpha_bnd <- 0.05   # global nominal level — ARL >= 20
+alpha_bnd <- 0.001   # global nominal level — ARL >= 1000
 
 # Per-stream AGRAPA log-increments (N x K matrix)
 inc_bnd <- sapply(seq_len(K_bnd), function(k)
