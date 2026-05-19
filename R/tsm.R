@@ -6,7 +6,7 @@
 setClass("TestSupermartingale", slots = c(model = "Model", initial = "numeric"))
 
 # Class: TSM
-# purpose: generic TSM class built from a GaussianVAR, BernoulliModel, or any Model subclass
+# purpose: generic TSM class built from a GaussianVARModel, BernoulliModel, or any Model subclass
 setClass("TSM", contains = "TestSupermartingale")
 
 # Backward-compatible alias class
@@ -33,6 +33,81 @@ setClass("ConformalTSM",
 
 ConformalTSM <- function(...) stop("ConformalTSM is not yet implemented.", call. = FALSE)
 
+# ---- vectorised fast-path helpers ------------------------------------------
+
+# Fast path: BoundedModel — O(N) vectorised AGRAPA bets via running cumulative sums.
+# Equivalent to the generic loop but avoids O(N^2) history accumulation.
+.bounded_increments_fast <- function(model, x, log) {
+  x   <- as.numeric(x)
+  .assert_numeric_vector(x, "x")
+  n   <- length(x)
+  eta <- model@eta
+
+  lag_n  <- c(0L, seq_len(n - 1L))       # lagged observation counts: 0,1,...,n-1
+  lag_s  <- c(0,  cumsum(x)[-n])         # lagged sums (0 when n=1)
+  lag_s2 <- c(0,  cumsum(x^2)[-n])
+
+  # Lagged mean and biased SD (safe at lag_n=0: lam forced to 0 below)
+  lag_mu <- lag_s / pmax(lag_n, 1L)
+  lag_sd <- pmax(sqrt(pmax(lag_s2 / pmax(lag_n, 1L) - lag_mu^2, 0)),
+                 model@sd_min)
+
+  lam_raw          <- (lag_mu - eta) / (lag_sd^2 + (lag_mu - eta)^2)
+  lam              <- pmax(0, pmin(lam_raw, model@c / (eta + model@eps)))
+  lam[lag_n == 0L] <- 0   # empty history → no bet
+
+  inc <- pmax(1 + lam * (x - eta), .Machine$double.eps)
+  if (log) base::log(inc) else inc
+}
+
+# Fast path: GaussianVARModel — O(N * K^2) vectorised log-LR computation.
+# Builds the full N-by-K conditional mean matrix for pre and post in one pass,
+# then computes all N Mahalanobis distances at once.
+.gvar_increments_fast <- function(model, x, log) {
+  if (is.null(dim(x))) x <- matrix(as.numeric(x), ncol = 1L)
+  .assert_numeric_vector(as.numeric(x), "x")
+  N  <- nrow(x)
+  K  <- ncol(x)
+  p  <- length(model@Phi_pre)
+  I_K <- if (K == 1L) matrix(1) else diag(K)
+
+  # Intercept vectors:  nu = (I - sum Phi_j) * mean  (for IID: nu = mean)
+  nu_pre  <- if (p > 0L) as.numeric((I_K - Reduce("+", model@Phi_pre))  %*% model@mean_pre)
+             else model@mean_pre
+  nu_post <- if (p > 0L) as.numeric((I_K - Reduce("+", model@Phi_post)) %*% model@mean_post)
+             else model@mean_post
+
+  # Initialise conditional mean matrices as N x K broadcasts of the intercept
+  cond_pre  <- matrix(nu_pre,  nrow = N, ncol = K, byrow = TRUE)
+  cond_post <- matrix(nu_post, nrow = N, ncol = K, byrow = TRUE)
+
+  if (p > 0L) {
+    # Prepend p rows of x0 for lag initialisation
+    x_pad <- rbind(matrix(model@x0, nrow = p, ncol = K, byrow = TRUE), x)
+    for (j in seq_len(p)) {
+      # Rows of x_pad corresponding to lag j at times t = 1..N
+      lag_mat    <- x_pad[(p - j + 1L):(p + N - j), , drop = FALSE]  # N x K
+      cond_pre   <- cond_pre  + lag_mat %*% t(model@Phi_pre[[j]])
+      cond_post  <- cond_post + lag_mat %*% t(model@Phi_post[[j]])
+    }
+  }
+
+  # Vectorised log MVN density: log_const - 0.5 * rowSums((resid %*% Sigma_inv) * resid)
+  .log_mvn_rows <- function(x_mat, mean_mat, Sigma) {
+    log_const <- -0.5 * (K * log(2 * pi) +
+                   as.numeric(determinant(Sigma, logarithm = TRUE)$modulus))
+    S_inv <- solve(Sigma)
+    resid <- x_mat - mean_mat
+    log_const - 0.5 * rowSums((resid %*% S_inv) * resid)
+  }
+
+  log_inc <- .log_mvn_rows(x, cond_post, model@Sigma_post) -
+             .log_mvn_rows(x, cond_pre,  model@Sigma_pre)
+  if (log) log_inc else pmax(exp(log_inc), .Machine$double.eps)
+}
+
+# ---- compute_increments for TSM --------------------------------------------
+
 # Method: compute_increments for TSM
 # inputs:
 #   object = TSM object
@@ -41,6 +116,17 @@ ConformalTSM <- function(...) stop("ConformalTSM is not yet implemented.", call.
 # outputs:
 #   numeric length-N vector with one-step increments (or log-increments)
 setMethod("compute_increments", "TSM", function(object, x, log = FALSE) {
+  model <- object@model
+
+  # Vectorised fast paths (bypass the generic observation-by-observation loop)
+  if (is(model, "GaussianVARModel"))
+    return(.gvar_increments_fast(model, x, log))
+  if (is(model, "BoundedModel") && is.null(dim(x)))
+    return(.bounded_increments_fast(model, x, log))
+
+  # Generic loop — used for BernoulliModel and any future Model subclasses.
+  # History is accumulated one observation at a time so that likelihood_increment
+  # has access to all past data (supports arbitrary dependence on lagged values).
   if (is.null(dim(x))) {
     .assert_numeric_vector(as.numeric(x), "x")
     x       <- as.numeric(x)
@@ -50,7 +136,7 @@ setMethod("compute_increments", "TSM", function(object, x, log = FALSE) {
 
     for (t in seq_len(n)) {
       if (is.na(x[t])) next   # offline: out[t] stays NA; history unchanged
-      out[t]  <- likelihood_increment(object@model, x = x[t], history = history, log = log)
+      out[t]  <- likelihood_increment(model, x = x[t], history = history, log = log)
       history <- c(history, x[t])
     }
     return(out)
@@ -58,7 +144,7 @@ setMethod("compute_increments", "TSM", function(object, x, log = FALSE) {
 
   if (!is.matrix(x) || !is.numeric(x))
     stop("`x` must be a numeric vector or matrix.", call. = FALSE)
-  if (!is(object@model, "MultivariateModel"))
+  if (!is(model, "MultivariateModel"))
     stop("Matrix input requires a model inheriting from `MultivariateModel`.", call. = FALSE)
 
   n       <- nrow(x)
@@ -66,7 +152,7 @@ setMethod("compute_increments", "TSM", function(object, x, log = FALSE) {
   history <- matrix(numeric(0), nrow = 0, ncol = ncol(x))
 
   for (t in seq_len(n)) {
-    out[t]  <- likelihood_increment(object@model, x = x[t, ], history = history, log = log)
+    out[t]  <- likelihood_increment(model, x = x[t, ], history = history, log = log)
     history <- rbind(history, x[t, , drop = FALSE])
   }
   out

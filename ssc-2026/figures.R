@@ -403,7 +403,100 @@ ggsave("figures/sim_regret_placeholder.png", p_sim,
        width = 9, height = 4.2, dpi = 220)
 
 # ======================================================================
-# 8. Placeholders for results-only figures that still need real data
+# 8. Section 6 simulation results: CAD vs change magnitude by detector
+#    -- reads simulation_output/var_sim_results.rds produced by
+#       inst/scripts/var_simulations.R (quick or full mode)
+# ======================================================================
+var_sim_rds <- file.path(PKG_DIR, "simulation_output", "var_sim_results.rds")
+if (file.exists(var_sim_rds)) {
+  var_res <- readRDS(var_sim_rds)
+
+  # ---- 8a. K=1: oracle vs misspec vs bounded (ARL criterion, nu=100) ----
+  res1 <- subset(var_res, K == 1 & criterion == "ARL" & nu == 100)
+  res1$Detector <- factor(
+    paste0(res1$detector, ifelse(res1$detector == "bounded",
+                                 paste0(" (", res1$combine, ")"), "")),
+    levels = c("oracle", "misspec", "bounded (average)")
+  )
+  res1$label <- factor(
+    res1$Detector,
+    labels = c("oracle (true params)",
+               "misspecified (mu1/2)",
+               "bounded (AGRAPA)")
+  )
+
+  p8a <- ggplot(res1, aes(delta, CAD, colour = label, shape = label)) +
+    geom_line(size = 0.8) +
+    geom_point(size = 2.2) +
+    scale_colour_manual(values = c("steelblue", "tomato", "forestgreen")) +
+    labs(
+      title    = "Conditional average delay vs. change magnitude  (K = 1)",
+      subtitle = "ARL criterion, nu = 100, p = 0, sigma = 0.06",
+      x        = expression(delta ~ "(change in mean)"),
+      y        = "CAD",
+      colour   = NULL, shape = NULL
+    ) +
+    theme_talk
+  ggsave("figures/sim_cad_k1.png", p8a, width = 7.5, height = 4.2, dpi = 220)
+
+  # ---- 8b. K=2: oracle vs all bounded combiners (ARL criterion, nu=100) ----
+  res2 <- subset(var_res, K == 2 & criterion == "ARL" & nu == 100)
+  res2$label <- with(res2, ifelse(
+    detector %in% c("oracle", "misspec"),
+    detector,
+    paste0("bounded (", combine, ")")
+  ))
+  res2$label <- factor(res2$label,
+    levels = c("oracle", "misspec",
+               "bounded (average)", "bounded (product)", "bounded (up)"),
+    labels = c("oracle", "misspecified",
+               "bounded: average", "bounded: product", "bounded: UP")
+  )
+
+  p8b <- ggplot(res2, aes(delta, CAD, colour = label, shape = label)) +
+    geom_line(size = 0.8) +
+    geom_point(size = 2.2) +
+    scale_colour_manual(
+      values = c("steelblue", "tomato",
+                 "forestgreen", "darkorange", "purple")
+    ) +
+    labs(
+      title    = "Conditional average delay vs. change magnitude  (K = 2)",
+      subtitle = "ARL criterion, nu = 100, p = 0, sigma = 0.06, independent streams",
+      x        = expression(delta ~ "(change in mean, equal across streams)"),
+      y        = "CAD",
+      colour   = NULL, shape   = NULL
+    ) +
+    theme_talk
+  ggsave("figures/sim_cad_k2.png", p8b, width = 7.5, height = 4.2, dpi = 220)
+
+  # ---- 8c. Power curves (K=1 and K=2 side-by-side) ----
+  res_pwr <- subset(var_res, criterion == "ARL" & nu == 100 &
+                      detector %in% c("oracle", "bounded") &
+                      (K == 1 | (K == 2 & combine == "average")))
+  res_pwr$Detector <- paste0(res_pwr$detector, " (K=", res_pwr$K, ")")
+
+  p8c <- ggplot(res_pwr, aes(delta, power, colour = Detector, shape = Detector)) +
+    geom_line(size = 0.8) +
+    geom_point(size = 2.2) +
+    labs(
+      title    = "Detection power vs. change magnitude",
+      subtitle = "Fraction of runs that stopped after the change-point",
+      x        = expression(delta),
+      y        = "Power",
+      colour   = NULL, shape = NULL
+    ) +
+    theme_talk
+  ggsave("figures/sim_power.png", p8c, width = 7.5, height = 4.2, dpi = 220)
+
+  message("Wrote simulation result figures (8a, 8b, 8c).")
+} else {
+  message("var_sim_results.rds not found — skipping Section 6 figures.",
+          "\nRun inst/scripts/var_simulations.R first.")
+}
+
+# ======================================================================
+# 9. Placeholders for results-only figures that still need real data
 # ======================================================================
 placeholder <- function(filename, title,
                         subtitle = "Replace with real result before the talk",
