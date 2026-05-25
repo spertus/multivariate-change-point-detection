@@ -1,15 +1,9 @@
 skip_if_not_integration()
 
 make_null_setup <- function() {
-  model <- GaussianModel(mean_pre = 0, sd_pre = 1, mean_post = 1, sd_post = 1)
-  tsm <- TSM(model)
-  dgp_null <- DGP(
-    generator = default_gaussian_dgp,
-    pre_params = list(mean = 0, sd = 1),
-    post_params = list(mean = 1, sd = 1),
-    nu = Inf,
-    name = "iid-gaussian-null"
-  )
+  model    <- GaussianModel(mean_pre = 0, sd_pre = 1, mean_post = 1, sd_post = 1)
+  tsm      <- TSM(model)
+  dgp_null <- DGP(model, nu = Inf, name = "iid-gaussian-null")
   list(model = model, tsm = tsm, dgp_null = dgp_null)
 }
 

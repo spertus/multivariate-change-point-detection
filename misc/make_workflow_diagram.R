@@ -120,9 +120,9 @@ draw_box(xs, y_out, ws, hx, fill = c_out, border = b_out,
 ## (7) DGP — left, optional, same y as Data
 draw_box(xl, y_data, wl, hs, fill = c_opt, border = b_opt, lty_border = "dashed",
          lines = c("DGP  (optional)",
-                   "default_gaussian_dgp",
-                   "default_multivariate_gaussian_dgp",
-                   "generate_stream(dgp, N, K)"))
+                   "DGP(GaussianModel(...))",
+                   "DGP(MultivariateGaussianModel(...))",
+                   "generate_stream(dgp, N)"))
 
 ## (8) Combiner — right, optional, same y as compute_increments
 draw_box(xr, y_comp, wr, hs, fill = c_opt, border = b_opt, lty_border = "dashed",

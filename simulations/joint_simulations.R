@@ -1,10 +1,10 @@
-# var_simulations.R
+# joint_simulations.R
 # Simulation study following Section 6 of Spertus et al.
 #
 # Three detector types are compared on K-stream VAR(p) data:
 #   oracle    — GaussianVARModel with the true pre/post parameters
-#   misspec   — GaussianVARModel with post-mean halved (mu1 replaced by (mu0+mu1)/2)
-#   bounded   — BoundedModel per stream, combined via average / product / UP
+#   misspec   — GaussianVARModel with post-mean shifted up by 0.1 (mu1 replaced by mu1 + 0.1)
+#   bounded   — BoundedModel per stream, combined via average or product
 #
 # Innovation SD is set to sigma_inn = 0.06 so that the stationary distribution
 # keeps data approximately in [0.06, 0.53] ⊂ [0,1], satisfying the bounded-TSM
@@ -12,21 +12,21 @@
 # mu_pre = 0.3 is [0.06, 0.54].)
 #
 # ── Timing estimate (single core) ───────────────────────────────────────────
-#   Quick mode (RUN_FULL = FALSE): ~5–10 min  [N=1000, 100 reps, 20 conditions]
-#   Full  mode (RUN_FULL = TRUE) : ~2–4 days  [N=3000, 500 reps, ~17K conditions]
+#   Quick mode (RUN_FULL = FALSE): ~16 sec  [N=1000, 100 reps, 10 conditions]
+#   Full  mode (RUN_FULL = TRUE) : ~1.5 hrs [N=3000, 300 reps, 640 conditions]
 #
-# compute_increments for both BoundedModel and GaussianVARModel is vectorised
-# (O(N) and O(N*K^2) respectively), so per-replicate cost is negligible.
-# The full grid is slow due to sheer condition count (~17K x 5 detector variants
-# x 500 reps); use parallel::mclapply or future.apply on the outer loop.
+# Full grid: p(2) x K(2) x nu(2) x delta(20) x sparse(2) x alpha(1)
+#            x criterion(1) x independent(2) = 640 conditions,
+#            each with 3–4 detector variants x 300 reps.
+# Use parallel::mclapply or future.apply on the outer (condition) loop to
+# reduce wall time.
 # ────────────────────────────────────────────────────────────────────────────
 
 library(multichangepoints)
-library(mvtnorm)   # already imported by multichangepoints
 
 # ── 0. Mode switch ──────────────────────────────────────────────────────────
 
-RUN_FULL <- FALSE          # set TRUE for the full Section 6 grid
+RUN_FULL <- TRUE           # set TRUE for the full Section 6 grid
 
 # ── 1. Fixed simulation constants ───────────────────────────────────────────
 
@@ -44,26 +44,28 @@ AR_COEFS <- list(
 )
 
 # ── 2. Parameter grids ──────────────────────────────────────────────────────
+# delta_norm is on the log scale so that more resolution is allocated near 0.01
+# (small signals) where power curves are steepest.
 
 quick_params <- list(
   p           = 0L,
   K           = c(1L, 2L),
-  nu          = c(50L, 100L),
-  delta_norm  = seq(0.05, 0.20, length.out = 5),
+  nu          = 100L,
+  delta_norm  = c(0, exp(seq(log(0.01), log(0.2), length.out = 4L))),
   sparse      = FALSE,
-  alpha       = 0.05,
+  alpha       = 0.0001,
   criterion   = "ARL",
   independent = TRUE
 )
 
 full_params <- list(
-  p           = c(0L, 1L, 2L),
-  K           = c(1L, 2L, 10L),
-  nu          = c(10L, 50L, 100L, 1000L),
-  delta_norm  = seq(0.01, 0.20, length.out = 20),
+  p           = c(0L, 1L),
+  K           = c(2L, 10L),
+  nu          = c(10L, 1000L),
+  delta_norm  = c(0, exp(seq(log(0.01), log(0.2), length.out = 19L))),
   sparse      = c(FALSE, TRUE),
-  alpha       = c(0.001, 0.01, 0.1),
-  criterion   = c("ARL", "PFA"),
+  alpha       = 0.0001,
+  criterion   = "ARL",
   independent = c(TRUE, FALSE)
 )
 
@@ -72,53 +74,36 @@ param_grid <- do.call(expand.grid,
     list(stringsAsFactors = FALSE)))
 
 N_OBS <- if (RUN_FULL) 3000L else 1000L
-N_REP <- if (RUN_FULL) 500L  else 100L
+N_REP <- if (RUN_FULL) 300L  else 100L
 
-# ── 3. Data generation ──────────────────────────────────────────────────────
+# ── 3. Single-replicate runner ───────────────────────────────────────────────
 
-# Generate an N_total x K VAR(p) path with a mean shift at time nu.
-# The post-change segment is initialised from the end of the pre-change segment.
-# phi_scalars: numeric vector of length p (applied equally to all K streams)
-.generate_var_path <- function(N_total, K, mu_pre, mu_post,
-                                nu, phi_scalars, sigma_mat) {
-  p     <- length(phi_scalars)
-  N_pad <- N_total + p                    # first p rows are burn-in
-  x     <- matrix(0, nrow = N_pad, ncol = K)
-  for (i in seq_len(p)) x[i, ] <- mu_pre # initialise at pre-change mean
-
-  for (t in (p + 1L):N_pad) {
-    obs_idx  <- t - p                     # observation index 1..N_total
-    mu_now   <- if (obs_idx <= nu) mu_pre else mu_post
-    cond_mu  <- mu_now
-    for (j in seq_len(p))
-      cond_mu <- cond_mu + phi_scalars[[j]] * (x[t - j, ] - mu_now)
-    x[t, ] <- cond_mu + as.numeric(rmvnorm(1, sigma = sigma_mat))
-  }
-  x[(p + 1L):N_pad, , drop = FALSE]
-}
-
-# ── 4. Single-replicate runner ───────────────────────────────────────────────
-
-# Returns a named list: stopping_time, false_alarm, delay
-.run_rep <- function(N, K, nu, mu_pre_vec, mu_post_vec,
-                     phi_scalars, sigma_mat, eta_vec,
+# Returns a named list: stopping_time (first alarm), false_alarm, delay
+# The detector uses multiple_alarms=TRUE so it resets after false alarms and
+# keeps accumulating evidence. stopping_time is the first alarm (for ARL),
+# false_alarm flags any alarm before nu, and delay is the gap from nu to the
+# first alarm after nu (NA if no post-change alarm occurs within N steps).
+.run_rep <- function(N, K, nu, mu0, mu1, phi_scalars, sigma_mat, eta_vec,
                      alpha, criterion, detector_type, combine_method) {
-  x <- .generate_var_path(N, K, mu_pre_vec, mu_post_vec,
-                           nu, phi_scalars, sigma_mat)
+  Phi_lst   <- lapply(phi_scalars, function(ph) ph * diag(K))
+  dgp_model <- GaussianVARModel(
+    Phi_pre   = Phi_lst, Sigma_pre  = sigma_mat, mean_pre  = mu0,
+    Phi_post  = Phi_lst, Sigma_post = sigma_mat, mean_post = mu1
+  )
+  x <- generate_stream(DGP(dgp_model, nu = nu), N = N)
+  if (is.null(dim(x))) x <- matrix(x, ncol = 1L)
 
   # ── compute per-stream or joint increments ──
   if (detector_type %in% c("oracle", "misspec")) {
-    mu_use  <- if (detector_type == "oracle") mu_post_vec
-               else (mu_pre_vec + mu_post_vec) / 2
-    Phi_lst <- lapply(phi_scalars, function(ph) ph * diag(K))
-    m       <- GaussianVARModel(
-      Phi_pre   = Phi_lst, Sigma_pre = sigma_mat, mean_pre  = mu_pre_vec,
+    mu_use <- if (detector_type == "oracle") mu1 else mu1 + 0.1
+    m <- GaussianVARModel(
+      Phi_pre   = Phi_lst, Sigma_pre  = sigma_mat, mean_pre  = mu0,
       Phi_post  = Phi_lst, Sigma_post = sigma_mat, mean_post = mu_use
     )
     inc <- compute_increments(TSM(m), x, log = TRUE)
 
   } else {
-    # BoundedModel: K separate streams, then combine
+    # BoundedModel: K separate streams, then combine (average or product only)
     inc_mat <- matrix(NA_real_, nrow = N, ncol = K)
     for (k in seq_len(K))
       inc_mat[, k] <- compute_increments(TSM(BoundedModel(eta = eta_vec[k])),
@@ -128,26 +113,29 @@ N_REP <- if (RUN_FULL) 500L  else 100L
       inc_mat[, 1L]
     } else if (combine_method == "average") {
       combine_streams(AverageCombiner(), inc_mat, log = TRUE)
-    } else if (combine_method == "product") {
-      combine_streams(ProductCombiner(), inc_mat, log = TRUE)
     } else {
-      combine_streams(UniversalPortfolioCombiner(mode = "sparse"), inc_mat, log = TRUE)
+      combine_streams(ProductCombiner(), inc_mat, log = TRUE)
     }
   }
 
-  # ── run detector ──
-  det <- ShiryaevRobertsDetector(alpha = alpha, criterion = criterion)
+  # ── run detector with resets after false alarms ──
+  det <- ShiryaevRobertsDetector(alpha = alpha, criterion = criterion,
+                                  multiple_alarms = TRUE)
   out <- run_detector(det, inc, log = TRUE)
-  tau <- out$stopping_time
+
+  all_alarms  <- out$alarm_times
+  first_alarm <- if (length(all_alarms) > 0L) all_alarms[1L] else Inf
+  post_alarms <- all_alarms[all_alarms > nu]
+  tau_detect  <- if (length(post_alarms) > 0L) post_alarms[1L] else Inf
 
   list(
-    stopping_time   = tau,
-    false_alarm     = is.finite(tau) && tau <= nu,
-    delay           = if (is.finite(tau) && tau > nu) tau - nu else NA_real_
+    stopping_time = first_alarm,
+    false_alarm   = any(all_alarms <= nu),
+    delay         = if (is.finite(tau_detect)) tau_detect - nu else NA_real_
   )
 }
 
-# ── 5. Main simulation loop ──────────────────────────────────────────────────
+# ── 4. Main simulation loop ──────────────────────────────────────────────────
 
 results <- vector("list", nrow(param_grid))
 
@@ -157,16 +145,15 @@ for (i in seq_len(nrow(param_grid))) {
   p    <- as.integer(row$p)
   nu   <- as.integer(row$nu)
 
-  phi_sc    <- AR_COEFS[[as.character(p)]]
-  mu0       <- rep(MU_PRE, K)
-  eta       <- rep(MU_PRE, K)   # null mean = pre-change mean
+  phi_sc <- AR_COEFS[[as.character(p)]]
+  mu0    <- rep(MU_PRE, K)
+  eta    <- rep(MU_PRE, K)   # null mean = pre-change mean
 
   # Post-change mean vector
-  if (isTRUE(row$sparse)) {
-    mu1       <- mu0
-    mu1[1L]   <- mu0[1L] + row$delta_norm
+  mu1 <- if (isTRUE(row$sparse)) {
+    m <- mu0; m[1L] <- mu0[1L] + row$delta_norm; m
   } else {
-    mu1 <- mu0 + row$delta_norm / sqrt(K)
+    mu0 + row$delta_norm / sqrt(K)
   }
 
   # Innovation covariance
@@ -183,15 +170,11 @@ for (i in seq_len(nrow(param_grid))) {
   # Detector variants to run for this condition
   det_variants <- list(
     list(type = "oracle",  combine = "joint"),
-    list(type = "misspec", combine = "joint")
+    list(type = "misspec", combine = "joint"),
+    list(type = "bounded", combine = "average")
   )
-  # Bounded combiners: average always; product only under independence; UP when K > 1
-  det_variants <- c(det_variants,
-    list(list(type = "bounded", combine = "average")))
-  if (K > 1L && (isTRUE(row$independent) || K == 1L))
+  if (K > 1L && isTRUE(row$independent))
     det_variants <- c(det_variants, list(list(type = "bounded", combine = "product")))
-  if (K > 1L)
-    det_variants <- c(det_variants, list(list(type = "bounded", combine = "up")))
 
   cond_rows <- vector("list", length(det_variants))
 
@@ -206,8 +189,8 @@ for (i in seq_len(nrow(param_grid))) {
           N              = N_OBS,
           K              = K,
           nu             = nu,
-          mu_pre_vec     = mu0,
-          mu_post_vec    = mu1,
+          mu0            = mu0,
+          mu1            = mu1,
           phi_scalars    = phi_sc,
           sigma_mat      = Sig,
           eta_vec        = eta,
@@ -222,9 +205,9 @@ for (i in seq_len(nrow(param_grid))) {
       )
     }
 
-    stops   <- vapply(reps, `[[`, numeric(1), "stopping_time")
-    delays  <- vapply(reps, `[[`, numeric(1), "delay")
-    fa      <- vapply(reps, `[[`, logical(1), "false_alarm")
+    stops  <- vapply(reps, `[[`, numeric(1),  "stopping_time")
+    delays <- vapply(reps, `[[`, numeric(1),  "delay")
+    fa     <- vapply(reps, `[[`, logical(1),  "false_alarm")
 
     cond_rows[[d]] <- data.frame(
       p           = p,
@@ -237,7 +220,7 @@ for (i in seq_len(nrow(param_grid))) {
       independent = row$independent,
       detector    = dv$type,
       combine     = dv$combine,
-      ARL         = mean(stops, na.rm = TRUE),
+      ARL         = mean(stops,  na.rm = TRUE),
       CAD         = mean(delays, na.rm = TRUE),
       PFA         = mean(fa,     na.rm = TRUE),
       power       = mean(!is.na(delays)),
@@ -254,10 +237,14 @@ for (i in seq_len(nrow(param_grid))) {
 
 results <- do.call(rbind, results)
 
-# ── 6. Save ──────────────────────────────────────────────────────────────────
+# ── 5. Save ──────────────────────────────────────────────────────────────────
 
-out_dir  <- "simulation_output"
-if (!dir.exists(out_dir)) dir.create(out_dir)
-saveRDS(results, file.path(out_dir, "var_sim_results.rds"))
-write.csv(results, file.path(out_dir, "var_sim_results.csv"), row.names = FALSE)
-message("Saved to ", out_dir)
+.pkg_root <- local({
+  d <- normalizePath(getwd())
+  while (!file.exists(file.path(d, "DESCRIPTION")) && d != dirname(d)) d <- dirname(d)
+  d
+})
+out_dir <- file.path(.pkg_root, "simulations", "output")
+if (!dir.exists(out_dir)) dir.create(out_dir, recursive = TRUE)
+write.csv(results, file.path(out_dir, "joint_sim_results.csv"), row.names = FALSE)
+message("Saved to ", file.path(out_dir, "joint_sim_results.csv"))

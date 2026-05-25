@@ -23,6 +23,8 @@
 \usepackage{appendixnumberbeamer}
 \usepackage{multicol}
 \usetikzlibrary{arrows.meta, positioning, calc, decorations.pathreplacing}
+\usepackage{natbib}
+
 
 % If you want citations, uncomment and provide refs.bib:
 % \usepackage[backend=biber,style=authoryear,maxcitenames=2]{biblatex}
@@ -49,9 +51,10 @@
 \newcommand{\Hc}{\mathcal{H}}
 \newcommand{\Fc}{\mathcal{F}}
 \newcommand{\indep}{\perp\!\!\!\perp}
+\newcommand{\bs}{\boldsymbol}
 
 % ---------- Title block ----------
-\title{Change-point detection and localization \\ for multiple data streams}
+\title{Change-point detection for multiple data streams: betting algorithms and application to infectious disease monitoring}
 \subtitle{CANSSI Postdoc Spotlight}
 \author{Jacob V.\ Spertus}
 \institute{CANSSI postdoc \\ \texttt{jakespertus@gmail.com}}
@@ -67,40 +70,37 @@
 \begin{frame}{Motivation: monitoring viral signals in wastewater}
   \begin{columns}[T,onlytextwidth]
     \column{0.55\textwidth}
-      \textbf{Problem.} Across a network of treatment sites we want to detect when
-      a virus deviates from its endemic ``state of control''---and \emph{which} site.
+      \textbf{Problem:} Detect when and where an infectious disease leaves an endemic ``state of control''.
       \medskip
 
       \textbf{Why it's hard.}
       \begin{itemize}\setlength\itemsep{0.3em}
-        \item Many noisy streams, shared seasonality.
-        \item Catchment areas, sampling protocols, weather, demographics all drift.
-        \item Multiple changes can occur at different sites at different times.
+        \item State of control: what is a meaningful anomaly? 
+        \item Noise: catchment areas, sampling protocols, weather, demographics vary in space and time.
+        \item Multiplicity: change at different sites at different times.
       \end{itemize}
       \medskip
 
-      \textbf{This talk.} A general construction for \emph{valid, efficient,
-      multi-stream} detectors---built out of bets---and an application to
+      \textbf{This talk:} Construct detectors and apply to
       Canadian wastewater data (\textsc{nwmp}).
-
     \column{0.45\textwidth}
+    \centering
+    \includegraphics[width=0.8\linewidth]{figures/nwmp_map.png}\\
       \includegraphics[width=\linewidth]{figures/wastewater_motivation.png}
-      \scriptsize\centering Placeholder: site map / multi-stream time-series teaser
   \end{columns}
 \end{frame}
 
 \begin{frame}{Roadmap}
   \begin{enumerate}\setlength\itemsep{0.6em}
-    \item \textbf{Part 1 (\textasciitilde 20 min).} Detectors as bets.
+    \item \textbf{Part 1 ($\sim$20 min):} Detection-by-betting
       \begin{itemize}
-        \item Validity (\ARL, \PFA) and efficiency (\CAD).
-        \item Test supermartingales and the Shiryaev--Roberts procedure.
-        \item Spending schedules: \ARL\ vs.\ \PFA\ control.
-        \item Multivariate combining: product, average, universal portfolio.
-        \item Localization via spending allowances.
-        \item Simulation snapshot.
+        \item Goals: validity and efficiency
+        \item Martingales, testing-by-betting, and the Shiryaev--Roberts procedure
+        \item Joint detectors via combining
+        \item Localization via allowances
+        \item Simulation snapshot
       \end{itemize}
-    \item \textbf{Part 2 (\textasciitilde 10 min).} Wastewater surveillance.
+    \item \textbf{Part 2 ($\sim$10 min):} Wastewater surveillance
   \end{enumerate}
 \end{frame}
 
@@ -110,97 +110,497 @@
 
 % ---------- Change-point setup ----------
 \begin{frame}{The sequential multivariate change-point problem}
-  Observe a stream of $K$-vectors $(\Xt)_{t \in \N}$.
-  At some unknown change-point $\nu \in \N \cup \{\infty\}$:
+  Continuously observe a stream of $K$-vectors $(\Xt)_{t \in \N}$ such that:
   \[
     (\Xt)_{t \le \nu} \sim P \in \Pc,\qquad
     (\Xt)_{t > \nu} \sim Q \in \Qc.
   \]
+  $\nu \in \N \cup \{\infty\}$ is the unknown \textit{change-point} \\
+   \vspace{2mm}
+  Full \alert{change-point model} is $(\mathcal{P}, \nu, \mathcal{Q})$ \\
+  \vspace{2mm}
   A \alert{detector} $D$ is a stopping time. We want:
   \begin{itemize}
-    \item \textbf{Validity:} alarm rate is bounded under \emph{no} change.
-    \item \textbf{Efficiency:} short delay after a real change.
+    \item \textbf{Validity:} alarm rate is bounded before change.
+    \item \textbf{Efficiency:} short delay after change.
   \end{itemize}
   \medskip
-
-  \begin{block}{Two error criteria}
-    \(\displaystyle \ARL(D) := \sup_{P\in\Pc}\E_{P,\infty}[D] \qquad \PFA(D) := \sup_{P\in\Pc}\Prob_{P,\infty}(D < \infty)\)
-  \end{block}
-  $D$ is \emph{$\ARL$-valid at level $\alpha$} if $\ARL(D) \ge 1/\alpha$;
-  \emph{$\PFA$-valid} if $\PFA(D) \le \alpha$.
 \end{frame}
 
-\begin{frame}{Efficiency: conditional average delay}
-  \begin{block}{Pollak--Siegmund conditional average delay}
-    \(\displaystyle
-      \CAD(D) := \sup_{\nu\ge 1}\E_{P,\nu,Q}\!\left[(D - \nu) \,\middle|\, D \ge \nu\right]
-    \)
-  \end{block}
+\begin{frame}{Example}
+      \centering
+  \includegraphics[width=0.95\linewidth]{figures/intro_changepoint.png}
+  \vspace{-0.5em}
+  \scriptsize 
+\end{frame}
+
+\begin{frame}{Some applications}
+
+\begin{itemize}
+    \item Industrial product quality \citep{shewart1931}
+    \vspace{3mm}
+    \item Linear control systems \citep{willsky1976}
+     \vspace{3mm}
+    \item Supervised learning (AI) for clinical prediction + decision-making \citep{fengEtal2022}
+     \vspace{3mm}
+    \item Remote health monitoring (BP, EKG, etc.) \citep{kishore2026}
+     \vspace{3mm}
+    \item Anomalies in sensor networks \citep{shiryaev2010, xie2013}
+     \vspace{3mm}
+    \item Structural change in financial models \citep{chu1996}
+\end{itemize}
+    Independence assumption is common, even in nonparametric settings (e.g., \citet{padilla2022, vovk2021})...
+\end{frame}
+
+\begin{frame}{Validity: ARL and PFA}
+
+Two error criteria:
+\begin{align*}
+    \ARL(D) &:= \sup_{P\in\Pc}\E_{P}[D] \\ 
+    \PFA(D) &:= \sup_{P\in\Pc}\Prob_{P}(D < \infty)
+\end{align*}
+
+  $D$ is \emph{$\ARL$-valid at level $\alpha$} if $\ARL(D) \ge 1/\alpha$\\
+  \vspace{3mm}
+  $D$ is \emph{$\PFA$-valid} if $\PFA(D) \le \alpha$.\\
+\vspace{3mm}
+\textbf{This talk:} ARL 
+\end{frame}
+
+\begin{frame}{ARL}
+    \centering
+  \includegraphics[width=0.95\linewidth]{figures/arl_intuition.png}
+  \vspace{-0.5em}
+  \scriptsize 
+\end{frame}
+
+\begin{frame}{Efficiency}
+Pollak--Siegmund conditional average delay:
+  $$
+\displaystyle
+      \CAD(D) := \sup_{\nu\ge 1}\E_{P,\nu,Q}\!\left[(D - \nu) \,\middle|\, D \ge \nu\right]$$
   \begin{itemize}
     \item Averages delay over sample paths where the detector \emph{didn't} already false-alarm.
-    \item $\CAD(D) \le \WAD(D)$ (Lorden's worst-case delay).
     \item Define \emph{regret} of $D$ relative to an oracle $D^\star$ that knows $(P,Q)$:
     \[
       \mathrm{regret}(D) := \CAD(D) - \CAD(D^\star).
     \]
+    \item An \textit{efficient} detector minimizes regret
   \end{itemize}
   \medskip
-  \alert{Goal of this work:} construct detectors with non-asymptotic validity
-  and small regret across a broad class of multivariate models.
+  \alert{Goal of this work:} definitely valid, approximately efficient, multivariate detectors.
 \end{frame}
 
 % ---------- Test supermartingales: betting ----------
-\begin{frame}{Test supermartingales: a sequential bet against $P$}
-  A \alert{test supermartingale} (\TSM) under $\Pc$ is a non-negative process
-  $(\Mt)$ with $M_0 = 1$ and
-  \[
-    \E_P[\Mt \mid \Fc_{t-1}] \le M_{t-1}, \quad \forall P \in \Pc.
-  \]
-  \pause
-  \textbf{Betting interpretation.}
-  Start with \$1. At each round, place a bet against $P$. If $P$ holds,
-  you can only \emph{lose money in expectation}. Hence Ville's inequality:
-  \[
-    \Prob_P\!\left(\exists t : \Mt \ge 1/\alpha\right) \le \alpha.
-  \]
-  \pause
-  \textbf{Concrete \TSM s.}
-  \begin{itemize}
-    \item Likelihood ratio $L_t = \prod_i f_Q(X_i \mid \Hc_i)/f_P(X_i \mid \Hc_i)$.
-    \item Predictable plug-in (quasi-\textsc{glr}) when $\Qc$ is composite.
-    \item Mixture over a prior on $\theta \in \Omega_1$.
-    \item Betting \TSM\ for bounded means (\textsc{agrapa}).
-  \end{itemize}
-\end{frame}
+% \begin{frame}{Test supermartingales: a sequential bet against $P$}
+% A \textit{filtration} $(\mathcal{F}_t)$ is an expanding sigma-algebra, capturing the information available at time $t$\\ 
+% \vspace{2mm}
+%   A \alert{test supermartingale} (\TSM) under $\Pc$ is a non-negative process
+%   $(\Mt)$ with $M_0 = 1$ and
+%   \[
+%     \E_P[\Mt \mid \Fc_{t-1}] \le M_{t-1}, \quad \forall~~ P \in \Pc.
+%   \]
+%   \pause
+%   \textbf{Betting interpretation.}
+%   Start with \$1. At each round, place a bet against $P$. If $P$ holds,
+%   bettor can only \emph{lose money in expectation}. \\
+%   \vspace{3mm}
+%   Ville's inequality guarantees bettor can probably never make much money:
+%   \[
+%     \Prob_P\!\left(\exists t : \Mt \ge 1/\alpha\right) \le \alpha.
+%   \]
+%   \pause
+%   \textbf{Concrete \TSM s:}
+%   \begin{itemize}
+%     \item Likelihood ratio: $\prod_i f_Q(X_i \mid \Hc_i)/f_P(X_i \mid \Hc_i)$.
+%     \item Non-negative, mean $\theta$: $\prod_i [1 + \lambda_i (X_i - \theta)]$. 
+%   \end{itemize}
+%   \textbf{Composite $\Qc$}: predictable estimate $\widehat{Q}$ (quasi-GLR) or mixture over a prior (quasi-Bayesian).
+% \end{frame}
 
-\begin{frame}{Picture: a \TSM\ under no change vs.\ after a change}
-  \centering
-  \includegraphics[width=0.95\linewidth]{figures/tsm_growth.png}
-  \vspace{-0.5em}
-  \scriptsize Dashed vertical line: true $\nu$. Wealth stays bounded under $P$ and grows after $\nu$.
+\begin{frame}{Picture: a test supermartingale under no change vs.\ after a change}
+
+A \textit{test supermartingale} ($M_t$) `does not grow' under $\mathcal{P}$: 
+$$\sup_{P \in \mathcal{P}} \mathbb{E}_P[M_t \mid \mathcal{F}_{t-1}] \leq M_{t-1}$$\\
+\vspace{3mm}
+$M_t$ is probably always small \citep{ville39}: 
+$\sup_{P \in \mathcal{P}} \mathbb{P}_P(\exists~ t: M_t > 1/\alpha) \leq \alpha$\\
+\vspace{3mm}
+Powerful tool for sequential analysis \citep{ramdasEtal23, grunwaldEtal24}
+  \begin{center}
+       \includegraphics[width=0.6\linewidth]{figures/tsm_growth.png}\\
+  \end{center}
+ 
 \end{frame}
 
 % ---------- Shiryaev-Roberts (ARL) ----------
 \begin{frame}{From a \TSM\ to a detector: Shiryaev--Roberts (\ARL\ control)}
-  Given a \TSM\ $(\Mt)$ with increments $\Lt := \Mt / M_{t-1}$, define
+ 
+  Given any \textit{test supermartingale} $(\Mt)$ for $\mathcal{P}$ with increments $\Lt := \Mt / M_{t-1}$, define
   \[
     \boxed{\ \Rt := \Lt \cdot (R_{t-1} + 1), \quad R_0 := 0 \ }
-    \qquad
-    D_{\SR} := \inf\{t : \Rt > 1/\alpha\}.
-  \]
+    \qquad\mbox{and}\qquad
+    \boxed{D_{\SR} := \inf\{t : \Rt > 1/\alpha\}}.
+  \]\\
+  \vspace{3mm}
   \pause
-  \textbf{Theorem (this work, building on E-detectors).} $\E_{P,\infty}[D_{\SR}] \ge 1/\alpha$ for every $P \in \Pc$.
+  \textbf{Theorem:} $D_{\SR}$ is ARL-valid for $\mathcal{P}$ \citep{shiryaev_1963}\\
+  \pause
   \medskip
+  \vspace{3mm}
+  \textbf{Investment view:} At every step $t$, invest a fresh \$1 to start a new \TSM\
+  betting against $P$ and compute $\Rt$ as the \emph{running sum} of your wealth. \citep{shin_2023} \\
+  \medskip
+  \vspace{3mm}
+  \textbf{Composite pre-change}: bet against every $P \in \mathcal{P}$, $R_t$ is the smallest wealth.
 
-  \textbf{Investment view.} At every step $t$ we plant a fresh \$1 in a new \TSM\
-  betting against $P$. $\Rt$ is the \emph{sum} of those \TSM s' wealth.
+  
 \end{frame}
 
 \begin{frame}{Picture: the Shiryaev--Roberts procedure}
   \centering
-  \includegraphics[width=0.95\linewidth]{figures/sr_procedure.png}
+  \includegraphics[width=0.7\linewidth]{figures/tsm_sr_intuition.png}\\
   \vspace{-0.5em}
   \scriptsize Dotted line: threshold $1/\alpha$. Green vertical: first crossing $=$ detection.
+\end{frame}
+
+\begin{frame}{Nonparametric likelihood ratio TSM}
+    For a non-negative data stream $(X_t)$ and predictable betting sequence $(\lambda_t)$:
+    $$ \prod_{i=1}^t [1 + \lambda_i (X_i - \eta_i)]$$
+    is a TSM when $\mathbb{E}[X_t | \mathcal{F}_{t-1}] \leq \eta_t$ and $\lambda_t \in [0,1/\eta]$ for all $t$:\\
+    \vspace{3mm}
+    \textbf{Features:}
+    \begin{itemize}
+        \item Finite-sample validity over nonparametric $\mathcal{P}$---all non-negative distributions with (conditional) mean less than $\eta_t$. 
+        \item Includes: Bernoulli, Beta, Poisson, truncated normal, contingency tables, all finite-populations; IID, Markov, VAR data
+        \item Optimal betting $\implies$ efficiency \citep{waudby-smithRamdas24, spertus24}
+        \item Handle additional nuisance parameters via maximization \citep{spertus2024sequential}
+    \end{itemize}
+\end{frame}
+
+
+% ---------- Multivariate combining ----------
+\begin{frame}{Joint detectors via meta-analysis of bets}
+  \alert{Goal}: detector fires if \textit{any} stream changes \\ 
+  \medskip
+  Let $(M_{tk})$ be a marginal \TSM\ for stream $k$, with increments $\Lambda_{tk}$.
+  \medskip
+  \begin{block}{Four ways to combine:}
+    \begin{description}[align = left]
+      \item[\textbf{Product}] $M_t^p = \prod_k M_{tk}$ \hfill (valid \emph{iff} streams are independent)
+      \item[\textbf{Average}] $M_t^a = \sum_k w_k M_{tk}$ with $\sum w_k = 1$  \hfill (valid under \emph{arbitrary} dependence)
+      \item[~~~~\textbf{Universal portfolio}] $M_t^u = \int_{\mathcal{S}^K} \prod_{i=1}^t \sum_{k=1}^K u_k \Lambda_{ik}\,d{\bs{u}}$ \hfill (always valid, better than average)
+      \item[~~~~\textbf{Maximum}] $M_t^m = \max_k M_{tk}$ \hfill (never valid!)
+    \end{description}
+  \end{block}
+  \medskip
+  Asymptotically, $M_t^u \geq M_t^m$ \citep{cover1991}, but $M_t^u$ is hard to compute\\
+  \medskip
+  \textbf{Analogue:} intersection testing (meta-analysis) with $E$-values \citep{vovkWang2021}
+  \medskip
+\end{frame}
+
+
+% \begin{frame}{Combiners on the same data}
+%   \centering
+%   \includegraphics[width=0.95\linewidth]{figures/combiners_paths.png}\\
+%   \scriptsize Same realizations as above, $K=6$, $\alpha = 10^{-3}$.
+%   Under sparse change UP $\approx$ product; under dense change product compounds fastest.
+% \end{frame}
+
+% ---------- Localization ----------
+\begin{frame}{Localization: \emph{which} stream changed?}
+ \alert{Goal}: $K$ change points $\{\nu_k\}_{k=1}^K$ $\implies$ $K$ detectors  \\ 
+    \medskip
+   Require $\bm{D} = [D_1, \ldots, D_K]$ to control the \emph{global} \ARL:
+  \[
+    \ARL(\bm{D}) := \sup_{P}\E_{P,\infty}\!\left[\min_k D_k\right]
+  \]
+  \pause
+  \medskip
+  \textbf{Testing analogue:} multiple testing / family-wise error rate. \\
+  \medskip 
+   \textbf{Union bound:} set each detector's threshold to $K/\alpha$\\
+   \medskip
+   This is the Bonferonni correction, which is crude...
+\end{frame}
+
+\begin{frame}{Localization via spending allowance}
+    A \alert{spending allowance} $(\gamma_t)$ has $\sum_k \gamma_{tk} = 1$ at \emph{each} time.\\
+    \medskip
+    \textbf{Theorem:} Thresholding each $R_{tk}^\gamma := \Lambda_{tk} (R_{(t-1)k}^\gamma + \gamma_{tk})$ controls the global ARL \\
+    \medskip
+    $(\gamma_t)$ may be predictable, adapting to past data + side information\\
+    \medskip
+    Examples:
+    \begin{itemize}
+        \item $\gamma_{tk} := 1/K \implies$ Bonferonni
+        \item $\gamma_{tk}$ with fixed weights $\implies$ prioritize ``more important'' streams 
+        \item $\gamma_{tk}$ as Bayesian posterior $\implies$ model alarms, focus on streams likely to change next
+    \end{itemize}
+\end{frame}
+
+% \begin{frame}{Spending allowances can beat Bonferroni}
+%   \textbf{Side information.}
+%   If we expect change to be more likely at certain streams (priors over $k$)
+%   or at certain times (priors over $t$), shift $\gamma_{tk}$ accordingly
+%   \emph{predictably}.
+%   \medskip
+
+%   \textbf{Adaptivity.}
+%   Once stream $k$ alarms, reallocate its remaining allowance to its neighbours
+%   on a spatial graph, or to streams correlated with it.
+%   \medskip
+
+%   \textbf{Validity preserved.} Predictability of $(\gamma_t)$ is the only requirement.
+% \end{frame}
+
+\begin{frame}{Example: graph-adaptive spending allowance}
+  \begin{columns}[T,onlytextwidth]
+    \column{0.58\textwidth}
+      \centering
+      \includegraphics[width=\linewidth]{figures/graph_spending.png}
+    \column{0.42\textwidth}
+      \footnotesize
+      \textbf{Before alarm}: uniform \\
+      \medskip
+      Here: $\gamma_{tk} = \tfrac{1}{6} \quad \forall\, k$\\
+      \medskip
+      \vspace{2mm}
+      \textbf{After alarm}: refocus allowance\\
+      \medskip
+      Here:
+        $\gamma_{tk} = \Bigl(0,\;\tfrac{2}{7},\;\tfrac{2}{7},\;\tfrac{1}{7},\;\tfrac{1}{7},\;\tfrac{1}{7}\Bigr)$\\
+      \medskip
+      \vspace{3mm}
+      \textit{Any predictable allowance preserves global ARL}
+  \end{columns}
+\end{frame}
+
+% ---------- Simulations: one key plot ----------
+\begin{frame}{Simulation snapshot: regret of different combining strategies}
+[Fix this!]
+  \begin{columns}[T,onlytextwidth]
+    \column{0.6\textwidth}
+      \centering
+      \includegraphics[width=\linewidth]{figures/sim_regret_placeholder.png}
+    \column{0.4\textwidth}
+      \footnotesize
+      \textbf{Setup.}
+      \begin{itemize}
+        \item $K=10$, $p=1$, $\alpha=0.01$, $\nu=100$.
+        \item Sparse vs.\ dense $\mu_1$, magnitude $\|\mu_1\|_2 \in [0.1, 2]$.
+        \item 500 reps each.
+      \end{itemize}
+      \medskip
+      \textbf{Takeaways.}
+      \begin{itemize}
+        \item UP $\approx$ product under sparse change.
+        \item Product wins under dense; UP close behind.
+        \item Average loses to UP everywhere.
+      \end{itemize}
+  \end{columns}
+\end{frame}
+
+\begin{frame}{Cost of stronger alarm control and localization}
+[Fix this!]
+  \centering
+  \includegraphics[width=0.85\linewidth]{figures/sim_arl_vs_pfa_localization_placeholder.png}\\
+  \scriptsize Regret of (a) \PFA-control vs.\ \ARL-control and
+  (b) localized vs.\ pooled detection. Both costs are small when priors are well-placed.
+\end{frame}
+
+% ============================================================
+\section{Part 2 --- Wastewater surveillance}
+% ============================================================
+
+\begin{frame}{Wastewater monitoring as a multi-stream change-point problem}
+  \textbf{Setting.}
+  Canadian \textsc{nwmp}: a graph of wastewater treatment sites,
+  each producing weekly viral signal time series for COVID, RSV, influenza, $\ldots$\\
+  \vspace{5mm}
+  \medskip
+    
+  \textbf{Public-health use case.}
+  Past work (Peng et al., Ottawa) links viral signals to leading clinical
+  indicators (hospitalizations 1--3 weeks out). Detection $\Rightarrow$
+  flag sites and triage resources.\\
+  \vspace{5mm}
+  \medskip
+  \textbf{Challenges:}
+  population state-of-control is uncertain, noise in population + sampling, composite null/alternative, multiple streams, multiple change-points, premium on simplicity
+\end{frame}
+
+\begin{frame}{Sources of noise and systematic uncertainty}
+  \begin{itemize}\setlength\itemsep{0.3em}
+    \item \textbf{Catchment.} Boundaries differ across sites; mobility leaks across them.
+    \item \textbf{Water volume.} Open vs.\ closed sewage systems; weather events dilute signal.
+    \item \textbf{Sampling design.} Auto vs.\ grab; compositing; lab platform; protocol changes.
+    \item \textbf{Demography.} Secular and seasonal shifts in resident population.
+    \item \textbf{Endemicity.} Even ``baseline'' COVID has a seasonal contour.
+  \end{itemize}
+\end{frame}
+
+\begin{frame}{What is the ``state of control''?}
+  Even with perfect data, the target is ambiguous. A working definition:
+  \medskip
+
+  \begin{block}{Operational state of control}
+    The covid signal moves \emph{in line with} other endemic respiratory viruses
+    (RSV, pMMoV) and with the historical seasonal contour observed in
+    2023--2025.
+  \end{block}
+  \medskip
+
+  \textbf{Concretely.} Normalize covid signal by RSV (or pMMoV), de-seasonalize,
+  and treat residuals as the monitored stream. Detection fires when covid is
+  \emph{unseasonably high} relative to its long-run movement with the
+  reference virus.
+  \medskip
+
+  \alert{Caveat}:
+  Public-health stakeholders may want different states of control
+  (e.g.\ absolute thresholds or hospital-aligned signals).
+\end{frame}
+
+\begin{frame}{Pipeline}
+  \centering
+  \resizebox{\textwidth}{!}{
+  \begin{tikzpicture}[
+      node distance=0.55cm and 0.65cm,
+      box/.style={draw, rounded corners, align=center, font=\footnotesize,
+                  inner sep=4pt, minimum height=1.0cm, minimum width=2.5cm},
+      arr/.style={-{Latex[length=2mm]}, thick}
+    ]
+    \node[box] (raw)   {Raw \textsc{nwmp}\\series};
+    \node[box, right=of raw] (norm) {Normalize\\Covid / RSV};
+    \node[box, right=of norm] (des)  {De-seasonalize};
+    \node[box, right=of des] (var)  {Detector on\\residuals};
+    \node[box, right=of var, fill=blue!10] (det) {S--R \\ detector};
+    \draw[arr] (raw) -- (norm);
+    \draw[arr] (norm) -- (des);
+    \draw[arr] (des) -- (var);
+    \draw[arr] (var) -- (det);
+
+    \node[box, below=of norm, font=\scriptsize] (split1) {Train split: 2023--2025};
+    \node[box, below=of var, font=\scriptsize] (split2) {Evaluate: 2025--2026};
+    \draw[arr, dashed] (split1) -- (norm.south);
+    \draw[arr, dashed] (split2) -- (var.south);
+  \end{tikzpicture}
+  }
+  \medskip
+  \scriptsize Pre-change parameters are learned on the held-out 2023--2025
+  window; the detector is run forward on 2025--2026 with no further refitting.
+\end{frame}
+
+\begin{frame}{Empirical: detector trajectory on 2025--2026 season}
+  \centering
+  \includegraphics[width=0.95\linewidth]{figures/ww_detector_placeholder.png}\\
+  \scriptsize Placeholder. Top: normalized de-seasonalized residuals across sites.
+  Bottom: $\log \Rt$ vs.\ time with threshold $\log(1/\alpha)$ for $\alpha = 0.01$.
+\end{frame}
+
+\begin{frame}{Localization on the WW site graph}
+  \textbf{Idea.} Treat sites as a graph (spatial adjacency, catchment overlap,
+  shared-platform clusters). Run per-site detectors with a \emph{spending
+  allowance} that:
+  \begin{itemize}
+    \item gives equal $\gamma_{tk}$ pre-firing (Bonferroni-equivalent), and
+    \item after firing at site $k^\star$, reallocates $k^\star$'s remaining
+      allowance to its neighbours via a Bayesian posterior over spread.
+  \end{itemize}
+  \medskip
+  \centering
+  \includegraphics[width=0.55\linewidth]{figures/ww_localization_placeholder.png}\\
+  \scriptsize Placeholder: adjacency-aware allocation cartoon.
+\end{frame}
+
+% ============================================================
+\section{Wrap-up}
+% ============================================================
+
+\begin{frame}{Summary}
+  \begin{itemize}\setlength\itemsep{0.4em}
+    \item Detectors are bets. Validity follows from the \TSM\ property and Ville's inequality.
+    \item Shiryaev--Roberts $\Rightarrow$ \ARL\ control.
+    \item Multivariate combining is meta-analysis: product / average / universal portfolio.
+    \item Localization is multiple testing with a predictable spending allowance.
+    \item Wastewater is a natural fit: composite pre-change, dependent streams,
+      multiple sites, drift.
+  \end{itemize}
+  \medskip
+
+  \textbf{What else:}
+  PFA control with spending schedule; efficient computation; incorporating clinical signals in WWM; extending to additional sites.
+\end{frame}
+
+\begin{frame}[standout]
+  Thank you.\\[0.6em]
+  {\normalsize \texttt{jakespertus@gmail.com}}
+\end{frame}
+
+\begin{frame}{References}
+\tiny 
+    \bibliographystyle{apalike}
+    \bibliography{cpd_bib.bib}
+\end{frame}
+
+% ============================================================
+\appendix
+
+\begin{frame}{Appendix: full \ARL\ theorem}
+  \begin{block}{Theorem (S--R is \ARL-valid).}
+    Given any \TSM\ $(\Mt)$ under $\Pc$ with increments $\Lt = \Mt/M_{t-1}$,
+    \(\Rt := \Lt(R_{t-1} + 1)\) yields
+    \(D_{\SR} := \inf\{t : \Rt > 1/\alpha\}\) with
+    \(\sup_{P\in\Pc} \E_{P,\infty}[D_{\SR}] \ge 1/\alpha.\)
+  \end{block}
+  \medskip
+  \textbf{Sketch.} $\Rt - t$ is a $P$-supermartingale; apply Doob's optional stopping
+  theorem at $D_{\SR}$ and use $R_{D_{\SR}} \ge 1/\alpha$.
+\end{frame}
+
+\begin{frame}{Appendix: full \PFA\ theorem}
+  \begin{block}{Theorem (scheduled S--R is \PFA-valid).}
+    With spending schedule $(\pi_t)$, $\sum_t \pi_t = 1$, and
+    \(\Rt^\pi := \Lt(R_{t-1}^\pi + \pi_t),\) the detector
+    \(D^\pi := \inf\{t : \Rt^\pi > 1/\alpha\}\) satisfies
+    \(\sup_{P\in\Pc}\Prob_{P,\infty}(D^\pi < \infty) \le \alpha.\)
+  \end{block}
+  \medskip
+  \textbf{Sketch.} Telescoping gives $\Rt^\pi = \sum_i \pi_i M_t^{(i)}$,
+  a convex combination of delayed \TSM s---hence itself a \TSM. Apply Ville.
+\end{frame}
+
+\begin{frame}{Appendix: bounded VAR($p$) model and \textsc{agrapa} bets}
+  \textbf{Model.} $\X_t \in [0,1]^K$, $\E_P[X_{tk} \mid \Fc_{t-1}] \le \eta_k$.
+  \medskip
+
+  \textbf{Marginal betting \TSM.}
+  \[
+    M^k_t = \prod_{i \le t} \bigl[1 + \lambda_{ik}(X_{ik} - \eta_k)\bigr],\qquad
+    \lambda_{ik} \in [0, 1/\eta_k]\ \text{predictable}.
+  \]
+
+  \textbf{\textsc{agrapa} (Waudby-Smith \& Ramdas).}
+  \[
+    \lambda_{tk} = 0 \vee
+    \frac{2(\hat\mu_{k(t-1)} - \eta_k)}{\hat\sigma_{k(t-1)}^2 + (\hat\mu_{k(t-1)} - \eta_k)^2}
+    \wedge \frac{c}{\eta_k}.
+  \]
+\end{frame}
+
+\begin{frame}{Appendix: Gaussian VAR($p$) increment}
+  \[
+    \log \Lt = \tfrac{1}{2}\log\frac{|\Sigma_0|}{|\Sigma_1|}
+    + \tfrac{1}{2}\Bigl[ (\Xt - m_t^0)^\top \Sigma_0^{-1}(\Xt - m_t^0)
+      - (\Xt - m_t^1)^\top \Sigma_1^{-1}(\Xt - m_t^1) \Bigr]
+  \]
+  where $m_t^i = \mu_i + \sum_{j=1}^p \Phi_j^{(i)} (\X_{t-j} - \mu_i)$.
+  \medskip
+
+  Coordinate-free expression: change in $\mu$, $\Phi_j$, or $\Sigma$ shows up
+  through the displacement of conditional means $m_t^1 - m_t^0$.
 \end{frame}
 
 % ---------- Spending schedule (PFA) ----------
@@ -273,307 +673,24 @@
   \alert{All three preserve the \TSM\ property, hence validity.}
 \end{frame}
 
-% ---------- Multivariate combining ----------
-\begin{frame}{Multivariate: joint detectors via meta-analysis of bets}
-  Let $(M^k_t)$ be a marginal \TSM\ for stream $k$, with increments $\Lambda^k_t$.
-  \medskip
-
-  \begin{block}{Three ways to combine \TSM s}
-    \begin{description}\setlength\itemsep{0.4em}
-      \item[\textbf{Product}] $M_t^p = \prod_k M^k_t$ \hfill (valid \emph{iff} streams are independent)
-      \item[\textbf{Average}] $M_t^a = \sum_k w_k M^k_t$ with $\sum w_k = 1$ \hfill (valid under \emph{arbitrary} dependence)
-      \item[\textbf{Universal portfolio}] $M_t^{\mathrm{up}} = \int_{\mathcal{S}^K} M_t(w)\,dw$ \hfill (matches the best constant-rebalanced portfolio in hindsight)
-    \end{description}
-  \end{block}
-  \medskip
-
-  \textbf{Testing analogue:} intersection testing / meta-analysis.
-  \medskip
-
-  \textbf{Tradeoff.} Product is most efficient when independence is right;
-  average / UP are the price of robustness to dependence.
-\end{frame}
-
 \begin{frame}{Sparse vs.\ dense change: where each combiner wins}
+
   \begin{columns}[T,onlytextwidth]
     \column{0.5\textwidth}
       \textbf{Sparse change.}\\
-      $\mu_1 - \mu_0 = \Delta \cdot e_{(j)}$.\\
-      Only one marginal \TSM\ grows.\\
-      Average / UP lose little; UP almost free.
+      $\bs{\mu}_1 - \bs{\mu}_0 = \Delta \cdot \bs{e}_{(j)}$.\\
+      One marginal \TSM\ grows.\\
+      UP is fine (beats max)
     \column{0.5\textwidth}
       \textbf{Dense change.}\\
-      $\mu_1 - \mu_0 = (\Delta/\sqrt{K})\cdot \bm{1}$.\\
-      Every marginal grows.\\
-      Product compounds; average pays $\sim 1/K$ in log-growth.
+      $\bs{\mu}_1 - \bs{\mu}_0 = (\Delta/\sqrt{K})\cdot \bm{1}$.\\
+      Every marginal \TSM\ grows.\\
+      Product compounds; UP loses.
   \end{columns}
-  \vspace{0.4em}
-  \centering
-  \includegraphics[width=0.78\linewidth]{figures/sparse_vs_dense.png}
+  % \vspace{0.4em}
+  % \centering
+  % \includegraphics[width=0.78\linewidth]{figures/sparse_vs_dense.png}
 \end{frame}
 
-\begin{frame}{Combiners on the same data}
-  \centering
-  \includegraphics[width=0.95\linewidth]{figures/combiners_paths.png}\\
-  \scriptsize Same realizations as above, $K=6$, $\alpha = 10^{-3}$.
-  Under sparse change UP $\approx$ product; under dense change product compounds fastest.
-\end{frame}
-
-% ---------- Localization ----------
-\begin{frame}{Localization: \emph{which} stream changed?}
-  Now allow $K$ distinct change-points $\nu_1, \ldots, \nu_K$ and detectors
-  $D_1, \ldots, D_K$. Control the \emph{global} \ARL\ or \PFA:
-  \[
-    \ARL(\bm{D}) := \sup_{P}\E_{P,\infty}\!\left[\min_k D_k\right],\quad
-    \PFA(\bm{D}) := \sup_{P}\Prob_{P,\infty}\!\left(\min_k D_k < \infty\right).
-  \]
-  \pause
-  \begin{block}{Spending allowances / joint spending schedules}
-    A \alert{spending allowance} $(\gamma_t)$ has $\sum_k \gamma_{tk} = 1$ at \emph{each} time.\\
-    A \alert{joint spending schedule} $(\pi_t)$ has $\sum_k \sum_t \pi_{tk} = 1$ \emph{globally}.
-  \end{block}
-  \pause
-  Run a scheduled S--R per stream with allowance $\gamma_{tk}$ (or schedule $\pi_{tk}$).
-  \alert{Globally \ARL- / \PFA-valid.}
-  \medskip
-
-  \textbf{Testing analogue:} multiple testing / family-wise error rate.\\
-  Uniform $\gamma_{tk} = 1/K$ recovers Bonferroni.
-\end{frame}
-
-\begin{frame}{Why spending allowances beat Bonferroni}
-  \textbf{Side information.}
-  If we expect change to be more likely at certain streams (priors over $k$)
-  or at certain times (priors over $t$), shift $\gamma_{tk}$ accordingly
-  \emph{predictably}.
-  \medskip
-
-  \textbf{Adaptivity.}
-  Once stream $k$ alarms, reallocate its remaining allowance to its neighbours
-  on a spatial graph, or to streams correlated with it.
-  \medskip
-
-  \textbf{Validity preserved.} Predictability of $(\gamma_t)$ is the only requirement.
-\end{frame}
-
-% ---------- Simulations: one key plot ----------
-\begin{frame}{Simulation snapshot: regret of combining strategies}
-  \begin{columns}[T,onlytextwidth]
-    \column{0.6\textwidth}
-      \centering
-      \includegraphics[width=\linewidth]{figures/sim_regret_placeholder.png}
-    \column{0.4\textwidth}
-      \footnotesize
-      \textbf{Setup.}
-      \begin{itemize}
-        \item $K=10$, $p=1$, $\alpha=0.01$, $\nu=100$.
-        \item Sparse vs.\ dense $\mu_1$, magnitude $\|\mu_1\|_2 \in [0.1, 2]$.
-        \item 500 reps each.
-      \end{itemize}
-      \medskip
-      \textbf{Takeaways.}
-      \begin{itemize}
-        \item UP $\approx$ product under sparse change.
-        \item Product wins under dense; UP close behind.
-        \item Average loses to UP everywhere.
-      \end{itemize}
-  \end{columns}
-\end{frame}
-
-\begin{frame}{Cost of stronger alarm control and localization}
-  \centering
-  \includegraphics[width=0.85\linewidth]{figures/sim_arl_vs_pfa_localization_placeholder.png}\\
-  \scriptsize Regret of (a) \PFA-control vs.\ \ARL-control and
-  (b) localized vs.\ pooled detection. Both costs are small when priors are well-placed.
-\end{frame}
-
-% ============================================================
-\section{Part 2 --- Wastewater surveillance}
-% ============================================================
-
-\begin{frame}{Wastewater monitoring as a multi-stream change-point problem}
-  \textbf{Setting.}
-  Canadian \textsc{nwmp}: a graph of wastewater treatment sites,
-  each producing weekly viral signal time series for COVID, RSV, influenza, $\ldots$
-  \medskip
-
-  \textbf{Public-health use case.}
-  Past work (Peng et al., Ottawa) links viral signals to leading clinical
-  indicators (hospitalizations 1--3 weeks out). Detection $\Rightarrow$
-  flag sites and triage resources.
-  \medskip
-
-  \textbf{Why classical change-point detection struggles here:}
-  noise, composite alternative, multiple streams, multiple change-points,
-  and seasonality.
-\end{frame}
-
-\begin{frame}{Sources of noise and systematic uncertainty}
-  \begin{itemize}\setlength\itemsep{0.3em}
-    \item \textbf{Catchment.} Boundaries differ across sites; mobility leaks across them.
-    \item \textbf{Water volume.} Open vs.\ closed sewage systems; weather events dilute signal.
-    \item \textbf{Sampling design.} Auto vs.\ grab; compositing; lab platform; protocol changes.
-    \item \textbf{Demography.} Secular and seasonal shifts in resident population.
-    \item \textbf{Endemicity.} Even ``baseline'' COVID has a seasonal contour now.
-  \end{itemize}
-  \medskip
-  \alert{Implication:} the pre-change model must be composite and robust;
-  exact joint likelihoods are not defensible.
-\end{frame}
-
-\begin{frame}{What is the ``state of control''?}
-  Even with perfect data, the target is ambiguous. A working definition:
-  \medskip
-
-  \begin{block}{Operational state of control}
-    The covid signal moves \emph{in line with} other endemic respiratory viruses
-    (RSV, pMMoV) and with the historical seasonal contour observed in
-    2023--2025.
-  \end{block}
-  \medskip
-
-  \textbf{Concretely.} Normalize covid signal by RSV (or pMMoV), de-seasonalize,
-  and treat residuals as the monitored stream. Detection fires when covid is
-  \emph{unseasonably} elevated relative to its long-run co-movement with the
-  reference virus.
-  \medskip
-
-  \alert{Caveats to flag in the talk.}
-  Public-health stakeholders may want different states of control
-  (e.g.\ absolute thresholds, hospital-aligned signals).
-\end{frame}
-
-\begin{frame}{Pipeline}
-  \centering
-  \begin{tikzpicture}[
-      node distance=0.55cm and 0.65cm,
-      box/.style={draw, rounded corners, align=center, font=\footnotesize,
-                  inner sep=4pt, minimum height=1.0cm, minimum width=2.5cm},
-      arr/.style={-{Latex[length=2mm]}, thick}
-    ]
-    \node[box] (raw)   {Raw \textsc{nwmp}\\series};
-    \node[box, right=of raw] (norm) {Normalize\\Covid / RSV};
-    \node[box, right=of norm] (des)  {De-seasonalize};
-    \node[box, right=of des] (var)  {VAR($p$) on\\residuals};
-    \node[box, right=of var, fill=blue!10] (det) {S--R \\ detector};
-    \draw[arr] (raw) -- (norm);
-    \draw[arr] (norm) -- (des);
-    \draw[arr] (des) -- (var);
-    \draw[arr] (var) -- (det);
-
-    \node[box, below=of norm, font=\scriptsize] (split1) {Train split: 2023--2025};
-    \node[box, below=of var, font=\scriptsize] (split2) {Evaluate: 2025--2026};
-    \draw[arr, dashed] (split1) -- (norm.south);
-    \draw[arr, dashed] (split2) -- (var.south);
-  \end{tikzpicture}
-  \medskip
-  \scriptsize Pre-change VAR($p$) parameters are learned on the held-out 2023--2025
-  window; the detector is run forward on 2025--2026 with no further refitting.
-\end{frame}
-
-\begin{frame}{Empirical: detector trajectory on 2025--2026 season}
-  \centering
-  \includegraphics[width=0.95\linewidth]{figures/ww_detector_placeholder.png}\\
-  \scriptsize Placeholder. Top: normalized de-seasonalized residuals across sites.
-  Bottom: $\log \Rt$ vs.\ time with threshold $\log(1/\alpha)$ for $\alpha = 0.01$.
-\end{frame}
-
-\begin{frame}{Localization on the WW site graph}
-  \textbf{Idea.} Treat sites as a graph (spatial adjacency, catchment overlap,
-  shared-platform clusters). Run per-site detectors with a \emph{spending
-  allowance} that:
-  \begin{itemize}
-    \item gives equal $\gamma_{tk}$ pre-firing (Bonferroni-equivalent), and
-    \item after firing at site $k^\star$, reallocates $k^\star$'s remaining
-      allowance to its neighbours via a Bayesian posterior over spread.
-  \end{itemize}
-  \medskip
-  \centering
-  \includegraphics[width=0.55\linewidth]{figures/ww_localization_placeholder.png}\\
-  \scriptsize Placeholder: adjacency-aware allocation cartoon.
-\end{frame}
-
-% ============================================================
-\section{Wrap-up}
-% ============================================================
-
-\begin{frame}{Summary}
-  \begin{itemize}\setlength\itemsep{0.4em}
-    \item Detectors are bets. Validity follows from the \TSM\ property and Ville's inequality.
-    \item Shiryaev--Roberts $\Rightarrow$ \ARL\ control. Spending schedules $\Rightarrow$ \PFA\ control.
-    \item Multivariate combining is meta-analysis: product / average / universal portfolio.
-    \item Localization is multiple testing with a predictable spending allowance.
-    \item Wastewater is a natural fit: composite pre-change, dependent streams,
-      multiple sites, drift.
-  \end{itemize}
-  \medskip
-
-  \textbf{What's next.}
-  Adaptive, graph-aware allowances; mixed within-site dependence
-  (e.g.\ Markov within, dependent across); incorporating clinical signals.
-\end{frame}
-
-\begin{frame}[standout]
-  Thank you.\\[0.6em]
-  {\normalsize \texttt{jakespertus@gmail.com}}
-\end{frame}
-
-% ============================================================
-\appendix
-
-\begin{frame}{Appendix: full \ARL\ theorem}
-  \begin{block}{Theorem (S--R is \ARL-valid).}
-    Given any \TSM\ $(\Mt)$ under $\Pc$ with increments $\Lt = \Mt/M_{t-1}$,
-    \(\Rt := \Lt(R_{t-1} + 1)\) yields
-    \(D_{\SR} := \inf\{t : \Rt > 1/\alpha\}\) with
-    \(\sup_{P\in\Pc} \E_{P,\infty}[D_{\SR}] \ge 1/\alpha.\)
-  \end{block}
-  \medskip
-  \textbf{Sketch.} $\Rt - t$ is a $P$-supermartingale; apply Doob's optional stopping
-  theorem at $D_{\SR}$ and use $R_{D_{\SR}} \ge 1/\alpha$.
-\end{frame}
-
-\begin{frame}{Appendix: full \PFA\ theorem}
-  \begin{block}{Theorem (scheduled S--R is \PFA-valid).}
-    With spending schedule $(\pi_t)$, $\sum_t \pi_t = 1$, and
-    \(\Rt^\pi := \Lt(R_{t-1}^\pi + \pi_t),\) the detector
-    \(D^\pi := \inf\{t : \Rt^\pi > 1/\alpha\}\) satisfies
-    \(\sup_{P\in\Pc}\Prob_{P,\infty}(D^\pi < \infty) \le \alpha.\)
-  \end{block}
-  \medskip
-  \textbf{Sketch.} Telescoping gives $\Rt^\pi = \sum_i \pi_i M_t^{(i)}$,
-  a convex combination of delayed \TSM s---hence itself a \TSM. Apply Ville.
-\end{frame}
-
-\begin{frame}{Appendix: bounded VAR($p$) model and \textsc{agrapa} bets}
-  \textbf{Model.} $\X_t \in [0,1]^K$, $\E_P[X_{tk} \mid \Fc_{t-1}] \le \eta_k$.
-  \medskip
-
-  \textbf{Marginal betting \TSM.}
-  \[
-    M^k_t = \prod_{i \le t} \bigl[1 + \lambda_{ik}(X_{ik} - \eta_k)\bigr],\qquad
-    \lambda_{ik} \in [0, 1/\eta_k]\ \text{predictable}.
-  \]
-
-  \textbf{\textsc{agrapa} (Waudby-Smith \& Ramdas).}
-  \[
-    \lambda_{tk} = 0 \vee
-    \frac{2(\hat\mu_{k(t-1)} - \eta_k)}{\hat\sigma_{k(t-1)}^2 + (\hat\mu_{k(t-1)} - \eta_k)^2}
-    \wedge \frac{c}{\eta_k}.
-  \]
-\end{frame}
-
-\begin{frame}{Appendix: Gaussian VAR($p$) increment}
-  \[
-    \log \Lt = \tfrac{1}{2}\log\frac{|\Sigma_0|}{|\Sigma_1|}
-    + \tfrac{1}{2}\Bigl[ (\Xt - m_t^0)^\top \Sigma_0^{-1}(\Xt - m_t^0)
-      - (\Xt - m_t^1)^\top \Sigma_1^{-1}(\Xt - m_t^1) \Bigr]
-  \]
-  where $m_t^i = \mu_i + \sum_{j=1}^p \Phi_j^{(i)} (\X_{t-j} - \mu_i)$.
-  \medskip
-
-  Coordinate-free expression: change in $\mu$, $\Phi_j$, or $\Sigma$ shows up
-  through the displacement of conditional means $m_t^1 - m_t^0$.
-\end{frame}
 
 \end{document}

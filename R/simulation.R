@@ -11,16 +11,81 @@ setClass(
   slots = c(generator = "function", pre_params = "list", post_params = "list", nu = "numeric", name = "character")
 )
 
+# Internal helper: .gvar_simulate
+# purpose: simulate N observations from a GaussianVARModel with a change at time nu.
+#          Handles VAR(0) (IID) and VAR(p) cases uniformly.
+# inputs:
+#   model = GaussianVARModel
+#   N     = integer number of observations to return
+#   nu    = numeric change-point; Inf means no change (all pre-change)
+# outputs:
+#   numeric vector (K=1) or numeric N-by-K matrix (K>1)
+.gvar_simulate <- function(model, N, nu) {
+  K  <- length(model@mean_pre)
+  p  <- length(model@Phi_pre)
+
+  if (p == 0L) {
+    pre  <- mvtnorm::rmvnorm(N, mean = model@mean_pre,  sigma = model@Sigma_pre)
+    post <- mvtnorm::rmvnorm(N, mean = model@mean_post, sigma = model@Sigma_post)
+    x <- if (is.finite(nu) && nu < N) {
+      nu_i <- as.integer(nu)
+      rbind(pre[seq_len(nu_i),     , drop = FALSE],
+            post[seq(nu_i + 1L, N), , drop = FALSE])
+    } else {
+      pre
+    }
+  } else {
+    I_K <- if (K == 1L) matrix(1) else diag(K)
+    intercept_pre  <- as.numeric((I_K - Reduce("+", model@Phi_pre))  %*% model@mean_pre)
+    intercept_post <- as.numeric((I_K - Reduce("+", model@Phi_post)) %*% model@mean_post)
+
+    N_pad  <- N + p
+    x      <- matrix(0, nrow = N_pad, ncol = K)
+    for (i in seq_len(p)) x[i, ] <- model@mean_pre
+
+    # Pre-draw all innovations: one Cholesky per regime, not per time step.
+    nu_i   <- if (is.finite(nu)) min(as.integer(nu), N) else N
+    n_pre  <- nu_i
+    n_post <- N - nu_i
+    innov  <- matrix(0, nrow = N_pad, ncol = K)
+    innov[seq(p + 1L, p + n_pre), ] <-
+      matrix(rnorm(n_pre * K), n_pre, K) %*% chol(model@Sigma_pre)
+    if (n_post > 0L)
+      innov[seq(p + n_pre + 1L, N_pad), ] <-
+        matrix(rnorm(n_post * K), n_post, K) %*% chol(model@Sigma_post)
+
+    for (t in seq(p + 1L, N_pad)) {
+      obs_idx   <- t - p
+      is_post   <- obs_idx > nu_i
+      intercept <- if (is_post) intercept_post else intercept_pre
+      Phi_use   <- if (is_post) model@Phi_post  else model@Phi_pre
+      cond_mu   <- intercept
+      for (j in seq_len(p))
+        cond_mu <- cond_mu + as.numeric(Phi_use[[j]] %*% x[t - j, ])
+      x[t, ] <- cond_mu + innov[t, ]
+    }
+    x <- x[seq(p + 1L, N_pad), , drop = FALSE]
+  }
+
+  if (K == 1L) as.vector(x[, 1L]) else x
+}
+
 # Constructor: DGP
 # inputs:
-#   generator   = function(N, K, nu, pre_params, post_params)
-#   pre_params  = named list for pre-change generator settings
-#   post_params = named list for post-change generator settings
+#   generator   = GaussianVARModel (preferred) or function(N, K, nu, pre_params, post_params)
+#   pre_params  = named list for generator settings (only used with function-based generators)
+#   post_params = named list for generator settings (only used with function-based generators)
 #   nu          = numeric scalar change-point (default Inf)
 #   name        = character label
 # outputs:
 #   DGP object
 DGP <- function(generator, pre_params = list(), post_params = list(), nu = Inf, name = "dgp") {
+  if (is(generator, "GaussianVARModel")) {
+    model  <- generator
+    gen_fn <- function(N, K, nu, pre_params, post_params) .gvar_simulate(model, N, nu)
+    return(new("DGP", generator = gen_fn, pre_params = list(), post_params = list(),
+               nu = as.numeric(nu), name = as.character(name)))
+  }
   stopifnot(is.function(generator), length(nu) == 1L)
   new("DGP", generator = generator, pre_params = pre_params, post_params = post_params, nu = nu, name = name)
 }
@@ -74,85 +139,6 @@ expand_dgp_grid <- function(template_dgp, param_grid) {
   }
 
   out
-}
-
-# Function: default_gaussian_dgp
-# purpose: generate IID Gaussian streams with a single shared change-point
-# inputs:
-#   N           = integer horizon
-#   K           = integer number of streams
-#   nu          = numeric change-point; if finite and < N, post-change starts at nu+1
-#   pre_params  = list(mean, sd) for pre-change Gaussian draws
-#   post_params = list(mean, sd) for post-change Gaussian draws
-# outputs:
-#   numeric vector (K=1) or numeric N-by-K matrix (K>1)
-default_gaussian_dgp <- function(N, K = 1L, nu = Inf, pre_params = list(mean = 0, sd = 1), post_params = list(mean = 1, sd = 1)) {
-  out <- matrix(0, nrow = N, ncol = K)
-  for (j in seq_len(K)) {
-    pre <- stats::rnorm(N, mean = pre_params$mean, sd = pre_params$sd)
-    post <- stats::rnorm(N, mean = post_params$mean, sd = post_params$sd)
-    if (is.finite(nu) && nu < N) {
-      out[, j] <- c(pre[1:nu], post[(nu + 1):N])
-    } else {
-      out[, j] <- pre
-    }
-  }
-  if (K == 1L) {
-    return(as.vector(out[, 1L]))
-  }
-  out
-}
-
-# Function: default_multivariate_gaussian_dgp
-# purpose: generate IID multivariate Gaussian vectors with a shared change-point
-# inputs:
-#   N           = integer horizon
-#   nu          = numeric change-point; if finite and < N, post-change starts at nu+1
-#   pre_params  = list(mu, Sigma) for pre-change MVN draws
-#   post_params = list(mu, Sigma) for post-change MVN draws
-# outputs:
-#   numeric N-by-K matrix
-default_multivariate_gaussian_dgp <- function(N,
-                                              K = 2L,
-                                              nu = Inf,
-                                              pre_params = list(mu = rep(0, K), Sigma = diag(K)),
-                                              post_params = list(mu = rep(1, K), Sigma = diag(K))) {
-  mu_pre_raw <- if (!is.null(pre_params$mu)) pre_params$mu else pre_params$mean
-  mu_post_raw <- if (!is.null(post_params$mu)) post_params$mu else post_params$mean
-  if (is.null(mu_pre_raw) || is.null(mu_post_raw)) {
-    stop("`pre_params` and `post_params` must include `mu` (or alias `mean`).", call. = FALSE)
-  }
-  mu_pre <- as.numeric(mu_pre_raw)
-  mu_post <- as.numeric(mu_post_raw)
-  Sigma_pre <- pre_params$Sigma
-  Sigma_post <- post_params$Sigma
-
-  if (!is.matrix(Sigma_pre) || !is.matrix(Sigma_post)) {
-    stop("`pre_params$Sigma` and `post_params$Sigma` must be matrices.", call. = FALSE)
-  }
-  if (nrow(Sigma_pre) != ncol(Sigma_pre) || nrow(Sigma_post) != ncol(Sigma_post)) {
-    stop("Covariance matrices must be square.", call. = FALSE)
-  }
-  if (length(mu_pre) != nrow(Sigma_pre) || length(mu_post) != nrow(Sigma_post)) {
-    stop("Mean vectors must match covariance dimensions.", call. = FALSE)
-  }
-  if (length(mu_pre) != K || length(mu_post) != K) {
-    stop("`K` must match the dimension of provided means/covariances.", call. = FALSE)
-  }
-
-  if (inherits(try(chol(Sigma_pre), silent = TRUE), "try-error") ||
-      inherits(try(chol(Sigma_post), silent = TRUE), "try-error")) {
-    stop("Covariance matrices must be symmetric positive definite.", call. = FALSE)
-  }
-
-  pre <- mvtnorm::rmvnorm(N, mean = mu_pre, sigma = Sigma_pre)
-  post <- mvtnorm::rmvnorm(N, mean = mu_post, sigma = Sigma_post)
-
-  if (is.finite(nu) && nu < N) {
-    rbind(pre[1:nu, , drop = FALSE], post[(nu + 1):N, , drop = FALSE])
-  } else {
-    pre
-  }
 }
 
 # Internal helper: .run_single

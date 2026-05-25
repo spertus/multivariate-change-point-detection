@@ -106,12 +106,12 @@ setMethod("combine_streams", "AverageCombiner", function(object, streams, weight
     if (!log) {
       return(as.vector(streams %*% w))
     }
-    log_w <- ifelse(w > 0, log(w), -Inf)
-    out <- numeric(nrow(streams))
-    for (t in seq_len(nrow(streams))) {
-      out[t] <- .logsumexp(log_w + streams[t, ])
-    }
-    return(out)
+    log_w  <- ifelse(w > 0, log(w), -Inf)
+    lw_mat <- sweep(streams, 2, log_w, "+")
+    mx     <- do.call(pmax, as.data.frame(lw_mat))
+    return(ifelse(is.finite(mx),
+                  log(rowSums(exp(lw_mat - mx))) + mx,
+                  mx))
   }
 
   # NA-aware path: at each t, renormalise weights over online (non-NA) streams
