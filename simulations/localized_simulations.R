@@ -17,10 +17,10 @@
 #
 # ── Timing estimate (single core) ───────────────────────────────────────────
 #   Quick mode (RUN_FULL = FALSE): ~6 sec  [N=1000, 100 reps, 10 conditions]
-#   Full  mode (RUN_FULL = TRUE) : ~3 hrs  [N=3000, 500 reps, 960 conditions]
+#   Full  mode (RUN_FULL = TRUE) : ~35 min [N=3000, 300 reps, 320 conditions]
 #
-# Full grid: p(2) x K(3) x nu(2) x delta(20) x sparse(2) x alpha(1)
-#            x independent(2) = 960 conditions, each with 1 detector x 500 reps.
+# Full grid: p(2) x K(2) x nu(1) x delta(20) x sparse(2) x alpha(1)
+#            x independent(2) = 320 conditions, each with 1 detector x 300 reps.
 # Use parallel::mclapply or future.apply on the outer (condition) loop to
 # reduce wall time.
 # ────────────────────────────────────────────────────────────────────────────
@@ -29,7 +29,7 @@ library(multichangepoints)
 
 # ── 0. Mode switch ──────────────────────────────────────────────────────────
 
-RUN_FULL <- FALSE          # set TRUE for the full grid
+RUN_FULL <- TRUE           # set TRUE for the full grid
 
 # ── 1. Fixed simulation constants ───────────────────────────────────────────
 
@@ -61,8 +61,8 @@ quick_params <- list(
 
 full_params <- list(
   p           = c(0L, 1L),
-  K           = c(1L, 2L, 10L),
-  nu          = c(10L, 1000L),
+  K           = c(2L, 10L),
+  nu          = c(100L),
   delta_norm  = c(0, exp(seq(log(0.01), log(0.2), length.out = 19L))),
   sparse      = c(FALSE, TRUE),
   alpha       = 0.0001,
@@ -74,7 +74,7 @@ param_grid <- do.call(expand.grid,
     list(stringsAsFactors = FALSE)))
 
 N_OBS <- if (RUN_FULL) 3000L else 1000L
-N_REP <- if (RUN_FULL) 500L  else 100L
+N_REP <- if (RUN_FULL) 300L  else 100L
 
 # ── 3. Single-replicate runner ───────────────────────────────────────────────
 

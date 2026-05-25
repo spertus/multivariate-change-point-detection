@@ -39,20 +39,30 @@ setClass(
     intercept_pre  <- as.numeric((I_K - Reduce("+", model@Phi_pre))  %*% model@mean_pre)
     intercept_post <- as.numeric((I_K - Reduce("+", model@Phi_post)) %*% model@mean_post)
 
-    N_pad <- N + p
-    x <- matrix(0, nrow = N_pad, ncol = K)
+    N_pad  <- N + p
+    x      <- matrix(0, nrow = N_pad, ncol = K)
     for (i in seq_len(p)) x[i, ] <- model@mean_pre
+
+    # Pre-draw all innovations: one Cholesky per regime, not per time step.
+    nu_i   <- if (is.finite(nu)) min(as.integer(nu), N) else N
+    n_pre  <- nu_i
+    n_post <- N - nu_i
+    innov  <- matrix(0, nrow = N_pad, ncol = K)
+    innov[seq(p + 1L, p + n_pre), ] <-
+      matrix(rnorm(n_pre * K), n_pre, K) %*% chol(model@Sigma_pre)
+    if (n_post > 0L)
+      innov[seq(p + n_pre + 1L, N_pad), ] <-
+        matrix(rnorm(n_post * K), n_post, K) %*% chol(model@Sigma_post)
 
     for (t in seq(p + 1L, N_pad)) {
       obs_idx   <- t - p
-      is_post   <- is.finite(nu) && obs_idx > nu
+      is_post   <- obs_idx > nu_i
       intercept <- if (is_post) intercept_post else intercept_pre
       Phi_use   <- if (is_post) model@Phi_post  else model@Phi_pre
-      Sigma_use <- if (is_post) model@Sigma_post else model@Sigma_pre
       cond_mu   <- intercept
       for (j in seq_len(p))
         cond_mu <- cond_mu + as.numeric(Phi_use[[j]] %*% x[t - j, ])
-      x[t, ] <- cond_mu + as.numeric(mvtnorm::rmvnorm(1, sigma = Sigma_use))
+      x[t, ] <- cond_mu + innov[t, ]
     }
     x <- x[seq(p + 1L, N_pad), , drop = FALSE]
   }
