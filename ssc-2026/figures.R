@@ -40,6 +40,241 @@ theme_talk <- theme_minimal(base_size = 14) +
         legend.position = "bottom")
 
 # ======================================================================
+# 0. Intro: the change-point problem
+#    Single Gaussian stream, true change-point nu, detection D, delay highlighted
+# ======================================================================
+set.seed(5)
+nu_intro <- 80
+D_intro  <- 115
+N_intro  <- 180
+
+x_intro <- c(rnorm(nu_intro, mean = 0,   sd = 1),
+             rnorm(N_intro - nu_intro, mean = 2, sd = 1))
+df_intro <- data.frame(
+  t      = seq_len(N_intro),
+  x      = x_intro,
+  period = factor(ifelse(seq_len(N_intro) <= nu_intro, "pre", "post"),
+                  levels = c("pre", "post"))
+)
+
+y_top    <- max(x_intro) * 0.92
+y_bracket <- min(x_intro) - 0.5
+
+p0 <- ggplot(df_intro, aes(t, x)) +
+  # shade detection delay
+  annotate("rect", xmin = nu_intro, xmax = D_intro, ymin = -Inf, ymax = Inf,
+           fill = "#f4a261", alpha = 0.25) +
+  # data, coloured by pre/post change
+  geom_point(aes(colour = period), size = 1.2, alpha = 0.8) +
+  scale_colour_manual(values = c(pre = "#457b9d", post = "#e63946"),
+                      labels = c(pre = "pre-change", post = "post-change"),
+                      name   = NULL) +
+  # true change-point
+  geom_vline(xintercept = nu_intro, linetype = "dashed", colour = "grey20", linewidth = 0.8) +
+  annotate("text", x = nu_intro - 2, y = y_top,
+           label = "nu", parse = TRUE, hjust = 1, size = 6, colour = "grey20") +
+  # detection time
+  geom_vline(xintercept = D_intro, colour = "#2a9d8f", linewidth = 1) +
+  annotate("text", x = D_intro + 2, y = y_top,
+           label = "italic(D)", parse = TRUE, hjust = 0, size = 6, colour = "#2a9d8f") +
+  # detection delay bracket (two-headed arrow)
+  annotate("segment",
+           x = nu_intro, xend = D_intro,
+           y = y_bracket, yend = y_bracket,
+           arrow = arrow(ends = "both", length = unit(0.10, "inches")),
+           colour = "#e07020", linewidth = 0.9) +
+  annotate("text", x = (nu_intro + D_intro) / 2, y = y_bracket,
+           label = "detection delay", vjust = -0.55, size = 3.8, colour = "#e07020") +
+  labs(x = "time", y = expression(X[t]),
+       title = "The change-point problem in one dimension") +
+  theme_talk +
+  theme(legend.position = "top")
+
+ggsave("figures/intro_changepoint.png", p0, width = 8, height = 4.5, dpi = 220)
+
+# ======================================================================
+# 0b. ARL intuition: 5 false alarms before nu = 100, run lengths near 20
+# ======================================================================
+set.seed(17)
+nu_arl       <- 100
+N_arl        <- 140
+
+# Hand-chosen false alarm times: 5 alarms, run lengths 18, 19, 18, 21, 19
+# (mean = 19 ≈ 20; they are clearly not all equal)
+false_alarms <- c(18, 37, 55, 76, 95)
+run_starts   <- c(1, head(false_alarms, -1) + 1)   # 1, 19, 38, 56, 77
+rls          <- false_alarms - run_starts + 1       # 18, 19, 18, 21, 19
+
+x_arl <- c(rnorm(nu_arl, mean = 0, sd = 1),
+           rnorm(N_arl - nu_arl, mean = 2, sd = 1))
+df_arl <- data.frame(
+  t      = seq_len(N_arl),
+  x      = x_arl,
+  period = factor(ifelse(seq_len(N_arl) <= nu_arl, "pre", "post"),
+                  levels = c("pre", "post"))
+)
+
+# Layout heights (computed after data are known)
+y_hi    <- max(x_arl)
+y_brack <- y_hi + 0.55    # horizontal bracket line
+y_rl    <- y_brack + 0.28 # run-length label
+y_plot  <- y_rl   + 0.25  # top of coord window
+y_nu    <- y_hi * 0.78    # nu label inside data area
+
+# Bracket data frame (one row per run-length interval)
+brack_df <- data.frame(
+  x    = run_starts + 0.4,
+  xend = false_alarms - 0.4,
+  y    = y_brack,
+  yend = y_brack,
+  xmid = (run_starts + false_alarms) / 2,
+  rl   = as.character(rls)
+)
+
+p0b <- ggplot(df_arl, aes(t, x)) +
+  geom_point(aes(colour = period), size = 1.2, alpha = 0.8) +
+  scale_colour_manual(values = c(pre = "#457b9d", post = "#e63946"),
+                      labels = c(pre = "pre-change", post = "post-change"),
+                      name = NULL) +
+  # false alarm vertical lines
+  geom_vline(xintercept = false_alarms, colour = "#e07020",
+             linewidth = 0.65, linetype = "solid", alpha = 0.9) +
+  # run-length brackets: two-headed arrows
+  geom_segment(data = brack_df,
+               aes(x = x, xend = xend, y = y, yend = yend),
+               arrow = arrow(ends = "both", length = unit(0.07, "inches")),
+               colour = "#e07020", linewidth = 0.65, inherit.aes = FALSE) +
+  # run-length numbers above brackets
+  geom_text(data = brack_df,
+            aes(x = xmid, y = yend + 0.25, label = rl),
+            colour = "#e07020", size = 3.7, fontface = "bold", inherit.aes = FALSE) +
+  # label one of the orange lines so audiences know what they are
+  annotate("text", x = false_alarms[3] + 1.5, y = -2.3,
+           label = "false alarm", colour = "#e07020",
+           size = 3.3, hjust = 0, fontface = "italic") +
+  annotate("segment", x = false_alarms[3] + 1.4, xend = false_alarms[3] + 0.2,
+           y = -2.3, yend = -1.6,
+           arrow = arrow(length = unit(0.08, "inches")),
+           colour = "#e07020", linewidth = 0.5) +
+  # true change-point
+  geom_vline(xintercept = nu_arl, linetype = "dashed",
+             colour = "grey20", linewidth = 0.9) +
+  annotate("text", x = nu_arl + 2, y = y_nu,
+           label = "nu", parse = TRUE, hjust = 0, size = 6, colour = "grey20") +
+  coord_cartesian(ylim = c(NA, y_plot), clip = "off") +
+  labs(x = "time", y = expression(X[t]),
+       title = "Average run length (ARL) = expected time between false alarms",
+       subtitle = "ARL = 20  →  expect ν / ARL = 100 / 20 = 5 false alarms before ν") +
+  theme_talk +
+  theme(legend.position = "top")
+
+ggsave("figures/arl_intuition.png", p0b, width = 8, height = 4.8, dpi = 220)
+
+# ======================================================================
+# 0c. Graph-adaptive spending allowance: before and after one node fires
+#     K = 6, star-of-stars topology: node 1 connects to nodes 2 and 3,
+#     which in turn connect to nodes 4, 5, and 6 respectively.
+#     Before: γ_k = 1/6  for all k.
+#     After node 1 fires: γ_1 = 0, γ_2 = γ_3 = 2/7 (neighbors), γ_4 = γ_5 = γ_6 = 1/7.
+# ======================================================================
+K_g <- 6L
+
+# Node positions (hand-placed for a readable two-row layout)
+node_pos <- data.frame(
+  node = 1:K_g,
+  x    = c(2, 1, 3, 0, 2, 4),
+  y    = c(3, 1.5, 1.5, 0, 0, 0)
+)
+
+# Edge list (undirected)
+edges_raw <- data.frame(
+  from = c(1, 1, 2, 2, 3),
+  to   = c(2, 3, 4, 5, 6)
+)
+
+# Expand each edge into from/to coordinates for geom_segment
+edges_coords <- function(pos, edge_df) {
+  merge(edge_df, pos, by.x = "from", by.y = "node") |>
+    (\(d) { names(d)[names(d) == "x"] <- "x_from"; names(d)[names(d) == "y"] <- "y_from"; d })() |>
+    merge(pos, by.x = "to", by.y = "node") |>
+    (\(d) { names(d)[names(d) == "x"] <- "x_to"; names(d)[names(d) == "y"] <- "y_to"; d })()
+}
+
+# Panel label strings (keep short so factor ordering is controlled explicitly)
+panel_before <- "Before: uniform"
+panel_after  <- "After node 1 fires"
+
+# ---- Before: all blue, uniform allowance ----
+nodes_before <- node_pos
+nodes_before$role    <- "other"
+nodes_before$gamma   <- "1/6"
+nodes_before$panel   <- panel_before
+
+edges_before         <- edges_coords(node_pos, edges_raw)
+edges_before$panel   <- panel_before
+edges_before$fired   <- FALSE
+
+# ---- After node 1 fires: red/yellow/blue ----
+nodes_after <- node_pos
+nodes_after$role  <- ifelse(nodes_after$node == 1, "fired",
+                    ifelse(nodes_after$node %in% c(2, 3), "neighbor", "other"))
+nodes_after$gamma <- ifelse(nodes_after$node == 1, "0",
+                    ifelse(nodes_after$node %in% c(2, 3), "2/7", "1/7"))
+nodes_after$panel <- panel_after
+
+edges_after       <- edges_coords(node_pos, edges_raw)
+edges_after$panel <- panel_after
+edges_after$fired <- edges_after$from == 1 | edges_after$to == 1
+
+# ---- Combine both panels (Before left, After right) ----
+nodes_g <- rbind(nodes_before, nodes_after)
+nodes_g$role  <- factor(nodes_g$role, levels = c("fired", "neighbor", "other"))
+nodes_g$panel <- factor(nodes_g$panel, levels = c(panel_before, panel_after))
+
+edges_g <- rbind(edges_before, edges_after)
+edges_g$panel <- factor(edges_g$panel, levels = c(panel_before, panel_after))
+
+role_colours <- c(fired = "#e63946", neighbor = "#f4a261", other = "#457b9d")
+
+p0c <- ggplot() +
+  # Edges: grey normally, red when they touch the fired node (after-panel only)
+  geom_segment(data = edges_g,
+               aes(x = x_from, xend = x_to, y = y_from, yend = y_to,
+                   colour = fired, linewidth = fired),
+               lineend = "round", show.legend = FALSE) +
+  scale_colour_manual(values = c("FALSE" = "grey60", "TRUE" = "#e63946"),
+                      guide = "none") +
+  scale_linewidth_manual(values = c("FALSE" = 0.8, "TRUE" = 1.8),
+                         guide = "none") +
+  # Nodes
+  geom_point(data = nodes_g,
+             aes(x, y, fill = role),
+             shape = 21, size = 11, colour = "white", stroke = 0.5,
+             show.legend = TRUE) +
+  scale_fill_manual(values = role_colours,
+                    labels = c(fired = "fired (k₀)", neighbor = "neighbor", other = "other"),
+                    name = NULL) +
+  # Node labels: node number
+  geom_text(data = nodes_g,
+            aes(x, y, label = node),
+            colour = "white", size = 4.2, fontface = "bold") +
+  # Allowance labels below each node (use plain ASCII gamma label)
+  geom_text(data = nodes_g,
+            aes(x, y - 0.38, label = paste0("γ=", gamma)),
+            colour = "grey20", size = 3.2) +
+  facet_wrap(~ panel) +
+  coord_fixed(ratio = 1, xlim = c(-0.7, 5.0), ylim = c(-0.75, 3.75)) +
+  theme_void(base_size = 13) +
+  theme(
+    strip.text       = element_text(face = "bold", size = 11, margin = margin(b = 6)),
+    legend.position  = "bottom",
+    legend.text      = element_text(size = 11),
+    plot.margin      = margin(6, 6, 6, 6)
+  )
+
+ggsave("figures/graph_spending.png", p0c, width = 10, height = 4.8, dpi = 220)
+
+# ======================================================================
 # 1. TSM log-wealth paths under no change vs. after a change
 #    -- uses GaussianModel + TSM + compute_increments + increments_to_tsm
 # ======================================================================

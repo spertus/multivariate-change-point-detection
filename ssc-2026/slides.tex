@@ -356,6 +356,41 @@
   \textbf{Validity preserved.} Predictability of $(\gamma_t)$ is the only requirement.
 \end{frame}
 
+% ---------- Graph-adaptive spending example ----------
+\begin{frame}{Example: graph-adaptive spending allowance}
+  \begin{columns}[T,onlytextwidth]
+    \column{0.58\textwidth}
+      \centering
+      \includegraphics[width=\linewidth]{figures/graph_spending.png}
+    \column{0.42\textwidth}
+      \footnotesize
+      \textbf{Before any alarm} ($K=6$ streams):
+      \[
+        \gamma_k = \tfrac{1}{6} \quad \forall\, k
+      \]
+      \medskip
+      \textbf{After stream $k_0 = 1$ alarms}, reallocate its allowance to
+      neighbours with double weight:
+      \[
+        \gamma_{k_0} = 0, \quad
+        \gamma_k =
+          \begin{cases}
+            w_N & k \sim k_0 \\
+            w_0 & \text{otherwise}
+          \end{cases}
+      \]
+      with $w_N = 2w_0$ and $\sum_{k \neq k_0} \gamma_k = 1$.
+
+      \medskip
+      \textbf{Here:} 2 neighbours, 3 others $\Rightarrow$
+      \[
+        \gamma = \Bigl(0,\;\tfrac{2}{7},\;\tfrac{2}{7},\;\tfrac{1}{7},\;\tfrac{1}{7},\;\tfrac{1}{7}\Bigr)
+      \]
+      \medskip
+      \textit{Any predictable reallocation preserves ARL/PFA validity.}
+  \end{columns}
+\end{frame}
+
 % ---------- Simulations: one key plot ----------
 \begin{frame}{Simulation snapshot: regret of combining strategies}
   \begin{columns}[T,onlytextwidth]
