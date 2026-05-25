@@ -363,77 +363,9 @@ missing_by_site <- cov %>%
 head(missing_by_site, 10)
 ```
 
-To demonstrate change-point detection on this data, we will perform such initial data filtering and transformation. For filtering we:
-- Select the highest-quality sites based on observable data: those that were enrolled early, contained few missing weeks, and had RSV measured.
-- Remove early measurements: monitoring began in 2020, but the signals are very volatile and not all sites we selected were online by then. For instance, laboratory protocols changed in February 2021 to sample the solid rather than liquid portion of a sample. RSV monitoring did not come online until January 2023. For now, we will start the streams from that date.
-- Remove low outliers: a very few observations (~0.1%) are zero or nearly zero. They are problematic on the log-scale and represent substantial negative deviations from the background rates observed around them. We set these to `NA` and linearly interpolate them when we fill in other 'natural' missing values. 
-
-```{r site selection}
-selected_sites <- c(
-  "Montreal North", 
-  "Montreal South",
-  "Vancouver Lions Gate",
-  "Vancouver Annacis Island",
-  "Winnipeg West End",
-  "Winnipeg North End",
-  "Toronto Humber",
-  "Toronto Ashbridges Bay",
-  "Toronto North Toronto",
-  "Halifax Halifax",
-  "St John's",
-  "Edmonton Goldbar",
-  "Regina"
-  )
-
-cov <- cov %>% 
-  filter(site %in% selected_sites) %>% # restrict to handful of sites
-  filter(weekstart > as.Date('2023-01-01')) %>% # remove early measurements
-  mutate(covN2 = ifelse(covN2 > .01, covN2, NA)) # set low outliers (0.1% of values) to missing
-```
 
 
-```{r plot selected sites}
-ggplot(cov, aes(x = weekstart, y = covN2,
-                     colour = site, group = site)) +
-  geom_line(linewidth = 0.55, alpha = 0.8) +
-  facet_wrap(~ site, ncol = 3, scales = "fixed") +
-  scale_x_date(date_breaks = "1 year", date_labels = "%Y") +
-  scale_y_log10(
-    labels = scales::label_comma(),
-    expand = expansion(mult = c(0, 0.05))
-  ) +
-  scale_colour_viridis_d(option = "turbo", guide = "none") +
-  labs(
-    x     = NULL,
-    y     = "Weekly average signal (copies / mL)",
-    title = "SARS-CoV-2 wastewater signal by site",
-    subtitle = "Each line = one monitoring site  |  y-axis free within panel"
-  ) +
-  theme_bw(base_size = 10) +
-  theme(
-    axis.text.x      = element_text(angle = 30, hjust = 1, size = 8),
-    strip.background = element_rect(fill = "#D6EAF8"),
-    strip.text       = element_text(face = "bold", size = 9),
-    panel.grid.minor = element_blank()
-  )
-```
 
-
-```{r define joint matrix}
-# Full weekly spine: every 7 days from global min to global max
-all_weeks <- seq(min(cov$weekstart), max(cov$weekstart), by = "7 days")
-
-joint_matrix <- cov %>%
-  mutate(change = covN2/lag(covN2)) %>% # week-over-week change
-  select(site, weekstart, covN2) %>%
-  complete(site, weekstart = all_weeks) %>%   # pad all site × week combinations with NA
-  arrange(site, weekstart) %>%
-  pivot_wider(names_from = weekstart, values_from = covN2) %>%
-  column_to_rownames("site") %>%
-  as.matrix()
-
-vis_miss(as.data.frame(joint_matrix))
-```
 
 
 ```{r impute missing}
@@ -441,69 +373,336 @@ vis_miss(as.data.frame(joint_matrix))
 # observed (non-NA) value. NAs outside that window remain NA (site offline).
 impute_row <- function(row) {
   obs <- which(!is.na(row))
-  if (length(obs) < 2L) return(row)   # 0 or 1 observation: nothing to interpolate
+  if (length(obs) < 2L) return(row)
   first <- obs[1L]; last <- obs[length(obs)]
   row[first:last] <- approx(obs, row[obs], xout = first:last)$y
   row
 }
-
-joint_matrix_complete <- t(apply(joint_matrix, 1, impute_row))
-
-cat("NAs before imputation:", sum(is.na(joint_matrix)), "\n")
-cat("NAs after imputation: ", sum(is.na(joint_matrix_complete)), "\n")
-cat("(Remaining NAs are leading/trailing offline periods.)\n")
-
-vis_miss(as.data.frame(joint_matrix_complete))
 ```
 
 
 
 # Change-point detection for WBE
 
-Change-point detection with WBE data is a major challenge because it is very difficult to identify the _state of control_ that is supposed to be represented by the pre-change model. 
-In this case, the state of control is a site-specific simple or composite model from which the observed sequence is generated when there is no epidemic.
-Since we have multiple sites, we might try to make some kind of 'synthetic state of control' by synthesizing data across sites that were epidemic-free at various times. 
-Unfortunately, this is subject to the many uncertainties inherent in wastewater surveillance across multiple sites [Joung et al (2023)](https://pmc.ncbi.nlm.nih.gov/articles/PMC10890812/pdf/CCDR-49-166.pdf), including:
+Defining a meaningful state of control is the central challenge of WBE.
+These data streams are subject to well-documented sources of noise and systematic
+uncertainty [Joung et al (2023)](https://pmc.ncbi.nlm.nih.gov/articles/PMC10890812/pdf/CCDR-49-166.pdf):
 
 - **Target quantity**: The true target quantity of interest is the average viral load in a particular population week over week. This quantity varies naturally over time when the virus is in an endemic state. While this variation is not genuinely random, it can be modeled as such. For instance, we might assume it maintains some low-level average with as-if-Gaussian fluctuations from week to week, in which case the sequence is _stationary_ in the endemic phase.
 - **Sampling**: The methods of sample collection, shipping, and storage (compositing vs grab sampling, location, timing, shipping temperature, distance to lab, missing data), which may vary across sites and time. The sites that were selected for our purposes primarily used composite sampling.
 - **Analysis**: Laboratory analysis variability (de-gritting subsampling, homogenization, instrument error, human error).
 - **Infrastructure**: The location and engineering of sewage systems and wastewater treatment plants (catchment area size and population, combined or separate ('sanitary') collection of runoff and wastewater).
-- **Weather**: Weather conditions (rainwater or snowmelt contributing to influent, temperature, pH), which vary across sites and seasons, with some degree of stochasticity. 
+- **Weather**: Weather conditions (rainwater or snowmelt contributing to influent, temperature, pH), which vary across sites and seasons, with some degree of stochasticity.
 
-In the literature, these uncertainties are dealt with under the rubric of _normalization_, which is an active  darea of research. 
-In some sense, defining a proper state of control from which deviations are meaningful is the whole challenge of WBE. 
-It may be easier to define the state of control for certain sites, like those with sanitary sewage systems that are less influenced by major weather events. 
-
-
-For any given site, we could imagine an ideal way to establish its state of control via _potential outcomes_. In one potential outcome, the site experiences a COVID epidemic and in another epidemic the site experiences no COVID epidemic (or some kind of endemic state, both of these are very rough definitions). 
-This is, of course, impossible in reality; we cannot even imagine a reasonable experiment because there is no way to manipulate the hypothetical intervention 'COVID epidemic'. 
-This could be considered a problem in _observational causal inference_. 
-One way to establish the state of control is through some kind of matching, wherein we find pairs site that are similar along various axes likely to effect background rates (collection, engineering, weather, etc); but in one site there is no epidemic and in another site there is an epidemic. 
-We could also do this by site-periods, with sites serving as their own control over periods where they are epidemic free.
-Another way is to fit models for the state of control. 
-This is attempted below. 
-In either case, establishing a meaningful state of control (a simple or composite pre-change model) should be done separately from running a change-point algorithm, which can detect deviations but cannot define the state of control without a user. 
+In the literature, these uncertainties are dealt with under the rubric of _normalization_, which is an active area of research.
+In some sense, defining a proper state of control from which deviations are meaningful is the whole challenge of WBE.
+It may be easier to define the state of control for certain sites, like those with sanitary sewage systems that are less influenced by major weather events.
 
 
 
-Notes:
-- Simultaneous error control (FWER, FDR) should be added to the software to allow for cases where *localization* of the change-point(s) is a goal. This is multiple testing, not intersection testing.
+---
 
-- Need to decide what the appropriate signal to monitor is, and what it's 'state of control' should be. Probably we can pre-transform everything before monitoring, so that we are basically just tracking independent residuals. Then we can state the assumptions we need / run tests (like ACF) to ensure those properly follow the pre-change model (including independence).
-- Another possibility is to *not* try to detect changes in the raw signal, but instead to use data on hospitalizations, as in recent work by [Peng et al (2025)](https://www.sciencedirect.com/science/article/pii/S1755436525000283) that maps the data to hospitalizations in Ottawa using distributed lag models. The model coefficients could be fit at each site using the ordered lasso [Tibshirani and Suo (2023)](https://pmc.ncbi.nlm.nih.gov/articles/PMC10004099/), a DL transformer, or another procedure, and we could try to detect anomalies in the *residuals* on the assumption that the residuals follow some distribution. For example we could test for deviations from normality. If we go this route, there are few things to be mindful of:
+# Detection pipeline: localized alarm on normalized de-seasonalized signal
 
-1) Use a DLM from the literature [Peng et al (2025)](https://www.sciencedirect.com/science/article/pii/S1755436525000283), at least the structural components (the coefficients may need to be refit at each site)
-2) The detection target is now 'deviations from good predictions' not 'deviations from an endemic state' that is, we aim to detect when the prediction models are no longer working and further investigation is needed. The deviations could be due to various factors including:
-  - A new variant where shedding-per-infection changes (most important signal)
-  - Change in hospitalization reporting or admission thresholds (less important)
-  - Change in sampling or testing procedures at wastewater sites (less important)
-  - Change in catchment population (e.g. due to seasonal tourism) for wastewater or for hospitals (less important)
-Any deviation is important in the sense that it merits further attention, but the first kind is the most directly relevant in a scientific or public health sense.
-3) **Hospitalization data** is needed near as many sites as possible. An initial search indicates that I could probably do Ottawa (via Peng et al data), and possibly also one Montreal site and one Toronto site (the hospital data is aggregated across catchments). Therefore the size of the analysis would be greatly reduced compared to the 13 sites I currently have.
-4) Residuals are still likely to exhibit temporal autocorrelation. We will need to estimate parameters that determine their conditional mean either for a Gaussian-AR TSM or for a Betting-AR TSM. 
+This section implements the pipeline from the slides: normalize (COVID/RSV ratio),
+de-seasonalize (cyclic spline on 2023–2025 training data), and run a
+`LocalizedDetector` on the probit-transformed residuals from the 2025–2026
+held-out period.
 
-- It may be interesting to do both: (a) directly monitoring signals and (b) monitoring residuals from hospital predictions.
-  
+## Site selection
 
+We redefine `selected_sites` with explicit inclusion criteria: enrolled by
+2023-01-01, observed through 2026-01-01, and ≥ 80% complete data for both
+covN2 and RSV within that window.
 
+```{r pipeline-site-selection}
+library(mgcv)
+
+window_start <- as.Date("2023-01-01")
+train_end    <- as.Date("2025-01-01")
+window_end   <- as.Date("2026-01-01")
+spine_pipe   <- seq(window_start, window_end, by = "7 days")
+n_expected   <- length(spine_pipe)
+
+# Enrollment window from full raw data (covN2 used as the enrollment marker)
+site_enrollment <- ww %>%
+  filter(measureid == "covN2", site != "") %>%
+  group_by(site) %>%
+  summarize(first_obs = min(weekstart), last_obs = max(weekstart), .groups = "drop")
+
+# Completeness for both covN2 and RSV within the evaluation window
+site_completeness <- ww %>%
+  filter(measureid %in% c("covN2", "rsv"), site != "",
+         weekstart >= window_start, weekstart <= window_end) %>%
+  select(site, weekstart, measureid, w_avg) %>%
+  pivot_wider(names_from = measureid, values_from = w_avg) %>%
+  group_by(site) %>%
+  summarize(
+    n_covN2   = sum(!is.na(covN2)),
+    n_rsv     = sum(!is.na(rsv)),
+    pct_covN2 = round(n_covN2 / n_expected, 3),
+    pct_rsv   = round(n_rsv   / n_expected, 3),
+    .groups   = "drop"
+  ) %>%
+  left_join(site_enrollment, by = "site") %>%
+  mutate(
+    enrolled_by_start = first_obs <= window_start,
+    through_end       = last_obs  >= window_end,
+    meets_criteria    = enrolled_by_start & through_end &
+                        pct_covN2 >= 0.80 & pct_rsv >= 0.80
+  )
+
+# Report sites that fail
+cat("=== Sites failing inclusion criteria ===\n")
+site_completeness %>%
+  filter(!meets_criteria) %>%
+  arrange(pct_rsv) %>%
+  select(site, first_obs, last_obs, pct_covN2, pct_rsv,
+         enrolled_by_start, through_end) %>%
+  knitr::kable()
+
+# Redefine selected_sites
+selected_sites <- site_completeness %>%
+  filter(meets_criteria) %>%
+  arrange(site) %>%
+  pull(site)
+
+cat("\nSelected sites (n =", length(selected_sites), "):\n")
+cat(paste(selected_sites, collapse = "\n"), "\n")
+```
+
+## Data preparation: log(covN2 / RSV), imputation
+
+```{r pipeline-data-prep}
+K_sites <- length(selected_sites)
+
+pipe_long <- ww %>%
+  filter(measureid %in% c("covN2", "rsv"), site %in% selected_sites) %>%
+  select(site, weekstart, measureid, w_avg) %>%
+  pivot_wider(names_from = measureid, values_from = w_avg) %>%
+  filter(weekstart >= window_start, weekstart <= window_end) %>%
+  # Drop low covN2 outliers (no lower bound applied to RSV)
+  mutate(covN2 = ifelse(!is.na(covN2) & covN2 < 0.01, NA, covN2)) %>%
+  mutate(log_ratio = ifelse(covN2 > 0 & !is.na(covN2) & rsv > 0 & !is.na(rsv),
+                             log(covN2 / rsv), NA_real_)) %>%
+  select(site, weekstart, log_ratio) %>%
+  # Fill the full weekly spine and interpolate gaps within each site's observed window
+  complete(site, weekstart = spine_pipe) %>%
+  arrange(site, weekstart) %>%
+  group_by(site) %>%
+  mutate(log_ratio = impute_row(log_ratio)) %>%
+  ungroup()
+
+cat("NAs remaining after imputation:", sum(is.na(pipe_long$log_ratio)),
+    "(leading/trailing offline periods)\n")
+
+# Wide matrix: K_sites rows x n_weeks columns
+ratio_matrix <- pipe_long %>%
+  pivot_wider(names_from = weekstart, values_from = log_ratio) %>%
+  column_to_rownames("site") %>%
+  as.matrix()
+```
+
+## De-seasonalization: cyclic spline on 2023–2025
+
+```{r pipeline-deseasonalize}
+train_idx <- which(spine_pipe <  train_end)
+test_idx  <- which(spine_pipe >= train_end)
+
+# Fit cyclic cubic spline on day-of-year using 2023–2025 training data;
+# predict the seasonal curve over the full window (2023–2026) to remove it.
+deseason_site <- function(y, dates) {
+  df <- data.frame(y = y, date = dates,
+                   yday = as.integer(format(dates, "%j")))
+  fit <- mgcv::gam(y ~ s(yday, bs = "cc", k = 10),
+                   data   = df[dates < train_end, ],
+                   knots  = list(yday = c(1, 365)),
+                   na.action = na.omit)
+  y - predict(fit, newdata = df)
+}
+
+resid_matrix <- ratio_matrix
+for (k in seq_len(K_sites))
+  resid_matrix[k, ] <- deseason_site(ratio_matrix[k, ], spine_pipe)
+
+# Quick sanity plot: training residuals should be roughly mean-zero
+train_resid_df <- as.data.frame(resid_matrix[, train_idx]) %>%
+  rownames_to_column("site") %>%
+  pivot_longer(-site, names_to = "date_chr", values_to = "resid") %>%
+  mutate(date = as.Date(date_chr))
+
+ggplot(train_resid_df, aes(x = date, y = resid, colour = site)) +
+  geom_line(linewidth = 0.4, alpha = 0.7, na.rm = TRUE) +
+  geom_hline(yintercept = 0, linetype = "dashed", colour = "grey40") +
+  facet_wrap(~ site, ncol = 3, scales = "free_y") +
+  scale_colour_viridis_d(option = "turbo", guide = "none") +
+  scale_x_date(date_breaks = "6 months", date_labels = "%b '%y") +
+  labs(x = NULL, y = "Residual log(covN2/RSV)",
+       title = "Training-period de-seasonalized residuals (2023–2025)") +
+  theme_bw(base_size = 9) +
+  theme(axis.text.x      = element_text(angle = 30, hjust = 1),
+        strip.background = element_rect(fill = "#D6EAF8"),
+        strip.text       = element_text(face = "bold", size = 8),
+        panel.grid.minor = element_blank())
+```
+
+## Probit transform and BoundedModel increments
+
+```{r pipeline-probit}
+# Standardize residuals by training-period SD per site; apply probit transform.
+# Under H0 (residuals ~ N(0, sigma^2)), pnorm(resid/sd) ~ Uniform(0,1) with
+# conditional mean 0.5, satisfying the BoundedModel null E[X_t] <= eta = 0.5.
+train_sd      <- apply(resid_matrix[, train_idx, drop = FALSE], 1, sd, na.rm = TRUE)
+probit_matrix <- pnorm(sweep(resid_matrix, 1, train_sd, "/"))
+
+# Test-period matrix: N_test x K_sites (as required by LocalizedDetector)
+test_mat  <- t(probit_matrix[, test_idx, drop = FALSE])
+test_dates <- spine_pipe[test_idx]
+N_test    <- nrow(test_mat)
+
+# BoundedModel log-increments per stream (eta = 0.5)
+inc_mat <- matrix(NA_real_, nrow = N_test, ncol = K_sites,
+                  dimnames = list(NULL, rownames(probit_matrix)))
+for (k in seq_len(K_sites))
+  inc_mat[, k] <- compute_increments(TSM(BoundedModel(eta = 0.5)),
+                                     test_mat[, k], log = TRUE)
+```
+
+## Raw vs. transformed streams
+
+```{r pipeline-compare-plot, fig.width=12, fig.height=9}
+library(patchwork)
+
+probit_long <- as.data.frame(probit_matrix) %>%
+  rownames_to_column("site") %>%
+  pivot_longer(-site, names_to = "date_chr", values_to = "probit") %>%
+  mutate(date = as.Date(date_chr))
+
+p_raw <- pipe_long %>%
+  rename(date = weekstart) %>%
+  ggplot(aes(x = date, y = log_ratio, colour = site)) +
+  geom_line(linewidth = 0.4, alpha = 0.8, na.rm = TRUE) +
+  geom_vline(xintercept = train_end, linetype = "dashed", colour = "grey50") +
+  facet_wrap(~ site, ncol = 2, scales = "free_y") +
+  scale_colour_viridis_d(option = "turbo", guide = "none") +
+  scale_x_date(date_breaks = "1 year", date_labels = "%Y") +
+  labs(x = NULL, y = "log(covN2 / RSV)",
+       title = "Raw log-ratio",
+       subtitle = "Dashed = train / test split (Jan 2025)") +
+  theme_bw(base_size = 8) +
+  theme(axis.text.x      = element_text(angle = 30, hjust = 1),
+        strip.background = element_rect(fill = "#D6EAF8"),
+        strip.text       = element_text(face = "bold", size = 7),
+        panel.grid.minor = element_blank())
+
+p_probit <- probit_long %>%
+  ggplot(aes(x = date, y = probit, colour = site)) +
+  geom_line(linewidth = 0.4, alpha = 0.8, na.rm = TRUE) +
+  geom_vline(xintercept = train_end, linetype = "dashed", colour = "grey50") +
+  geom_hline(yintercept = 0.5, linetype = "dotted", colour = "grey40") +
+  facet_wrap(~ site, ncol = 2, scales = "free_y") +
+  scale_colour_viridis_d(option = "turbo", guide = "none") +
+  scale_x_date(date_breaks = "1 year", date_labels = "%Y") +
+  labs(x = NULL, y = "Probit-transformed residual",
+       title = "Probit(de-seasonalized residual)",
+       subtitle = "Dotted = null mean (0.5)") +
+  theme_bw(base_size = 8) +
+  theme(axis.text.x      = element_text(angle = 30, hjust = 1),
+        strip.background = element_rect(fill = "#FDEBD0"),
+        strip.text       = element_text(face = "bold", size = 7),
+        panel.grid.minor = element_blank())
+
+p_raw | p_probit
+```
+
+## LocalizedDetector on 2025–2026
+
+```{r pipeline-detect}
+alpha_global <- 0.01
+log_thresh   <- log(1 / alpha_global)
+
+# Bonferroni allowance: uniform 1/K per stream
+ld      <- LocalizedDetector(K = K_sites, alpha = alpha_global, criterion = "ARL")
+det_out <- run_detector(ld, evidence = inc_mat, log = TRUE)
+
+# Per-stream stopping times → calendar dates
+stream_stops <- vapply(det_out$stream_results, `[[`, numeric(1L), "stopping_time")
+stop_dates   <- ifelse(is.finite(stream_stops),
+                        format(test_dates[pmin(as.integer(stream_stops), N_test)]),
+                        "no alarm")
+results_df <- data.frame(site      = rownames(probit_matrix),
+                          stop_date = stop_dates,
+                          row.names = NULL)
+
+cat("=== Detection results (alpha =", alpha_global,
+    ", threshold = log(1/alpha) =", round(log_thresh, 2), ") ===\n")
+cat("Global alarm:", det_out$alarm, "\n")
+if (det_out$alarm) {
+  cat("Global stopping time:",
+      format(test_dates[det_out$stopping_time]), "\n")
+  cat("First alarming stream:",
+      rownames(probit_matrix)[det_out$first_alarm_stream], "\n")
+}
+cat("\nPer-stream results:\n")
+print(results_df)
+```
+
+## Alarm plot
+
+```{r pipeline-plot, fig.height=9}
+site_names <- rownames(probit_matrix)
+
+# Alarm annotation data frame (streams that fired)
+alarm_df <- results_df %>%
+  filter(stop_date != "no alarm") %>%
+  mutate(alarm_date = as.Date(stop_date))
+
+# Log S-R statistic trajectories from the detector output
+sr_df <- lapply(seq_len(K_sites), function(k) {
+  data.frame(date   = test_dates,
+             site   = site_names[k],
+             log_SR = det_out$stream_results[[k]]$statistic)
+}) %>% bind_rows()
+
+# Raw log(covN2/RSV) for the test period
+raw_test_df <- pipe_long %>%
+  filter(site %in% selected_sites, weekstart %in% test_dates) %>%
+  rename(date = weekstart)
+
+# Panel 1: raw log-ratio with alarm lines
+p_raw <- ggplot(raw_test_df, aes(x = date, y = log_ratio, colour = site)) +
+  geom_line(linewidth = 0.5, alpha = 0.85, na.rm = TRUE) +
+  geom_vline(data = alarm_df, aes(xintercept = alarm_date, colour = site),
+             linetype = "dashed", linewidth = 0.75) +
+  facet_wrap(~ site, ncol = 3, scales = "free_y") +
+  scale_colour_viridis_d(option = "turbo", guide = "none") +
+  scale_x_date(date_breaks = "3 months", date_labels = "%b\n'%y") +
+  labs(x = NULL, y = "log(covN2 / RSV)",
+       title = "Raw COVID/RSV log-ratio — 2025–2026 test period",
+       subtitle = "Dashed line = first S-R alarm for that stream") +
+  theme_bw(base_size = 9) +
+  theme(strip.background = element_rect(fill = "#D6EAF8"),
+        strip.text       = element_text(face = "bold", size = 8),
+        panel.grid.minor = element_blank())
+
+# Panel 2: log S-R statistic with threshold
+p_sr <- ggplot(sr_df, aes(x = date, y = log_SR, colour = site)) +
+  geom_line(linewidth = 0.5, alpha = 0.85) +
+  geom_hline(yintercept = log_thresh, linetype = "dashed",
+             colour = "black", linewidth = 0.7) +
+  geom_vline(data = alarm_df, aes(xintercept = alarm_date, colour = site),
+             linetype = "dashed", linewidth = 0.75) +
+  facet_wrap(~ site, ncol = 3) +
+  scale_colour_viridis_d(option = "turbo", guide = "none") +
+  scale_x_date(date_breaks = "3 months", date_labels = "%b\n'%y") +
+  labs(x = NULL, y = expression(log~R[t]),
+       title = sprintf("Log Shiryaev–Roberts statistic (α = %.2f, threshold = %.1f)",
+                       alpha_global, log_thresh)) +
+  theme_bw(base_size = 9) +
+  theme(strip.background = element_rect(fill = "#FDEBD0"),
+        strip.text       = element_text(face = "bold", size = 8),
+        panel.grid.minor = element_blank())
+
+print(p_raw)
+print(p_sr)
+```
