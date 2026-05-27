@@ -762,3 +762,276 @@ placeholder("figures/ww_localization_placeholder.png",
             w = 7, h = 4.0)
 
 message("Wrote figures/*.png")
+
+# ======================================================================
+# 10. Joint + localized simulation results
+#     Reads simulations/output/{joint,localized}_sim_results.csv
+#     Saves to figures/simulations/
+# ======================================================================
+sim_dir   <- "figures/simulations"
+if (!dir.exists(sim_dir)) dir.create(sim_dir, recursive = TRUE)
+
+joint_csv <- file.path(PKG_DIR, "simulations", "output", "joint_sim_results.csv")
+local_csv <- file.path(PKG_DIR, "simulations", "output", "localized_sim_results.csv")
+
+if (!file.exists(joint_csv) || !file.exists(local_csv)) {
+  message("Simulation CSVs not found — skipping section 10.")
+} else {
+
+joint_raw <- read.csv(joint_csv,  stringsAsFactors = FALSE)
+local_raw <- read.csv(local_csv,  stringsAsFactors = FALSE)
+
+# ── Shared colour / shape palettes ────────────────────────────────────────
+det_pal <- c(
+  "oracle"           = "#1f77b4",
+  "misspecified"     = "#d62728",
+  "bounded: average" = "#2ca02c",
+  "bounded: product" = "#ff7f0e"
+)
+det_shapes <- c("oracle" = 16, "misspecified" = 17,
+                "bounded: average" = 15, "bounded: product" = 18)
+
+dep_pal <- c(
+  "indep + average" = "#2ca02c",
+  "indep + product" = "#ff7f0e",
+  "corr  + average" = "#9467bd"
+)
+
+p_pal    <- c("AR(0)" = "#2c7bb6", "AR(1)" = "#d7191c")
+p_ltypes <- c("AR(0)" = "solid",   "AR(1)" = "dashed")
+
+# ── Tidy joint data ───────────────────────────────────────────────────────
+joint <- joint_raw %>%
+  filter(delta > 0) %>%
+  mutate(
+    detector_label = case_when(
+      detector == "oracle"  ~ "oracle",
+      detector == "misspec" ~ "misspecified",
+      detector == "bounded" & combine == "average" ~ "bounded: average",
+      detector == "bounded" & combine == "product" ~ "bounded: product"
+    ),
+    detector_label = factor(detector_label, levels = names(det_pal)),
+    K_label     = factor(paste0("K = ", K),   levels = c("K = 2", "K = 10")),
+    sparse_label = factor(ifelse(sparse, "sparse change", "dense change"),
+                          levels = c("sparse change", "dense change")),
+    p_label     = factor(paste0("AR(", p, ")"), levels = c("AR(0)", "AR(1)"))
+  )
+
+# ── Tidy localized data ───────────────────────────────────────────────────
+local <- local_raw %>%
+  filter(delta > 0) %>%
+  mutate(
+    K_label     = factor(paste0("K = ", K),   levels = c("K = 2", "K = 10")),
+    sparse_label = factor(ifelse(sparse, "sparse change", "dense change"),
+                          levels = c("sparse change", "dense change")),
+    p_label     = factor(paste0("AR(", p, ")"), levels = c("AR(0)", "AR(1)")),
+    dep_label   = factor(ifelse(independent, "independent", "correlated"),
+                         levels = c("independent", "correlated")),
+    condition   = factor(
+      paste0("AR(", p, "), ", ifelse(independent, "independent", "correlated")),
+      levels = c("AR(0), independent", "AR(0), correlated",
+                 "AR(1), independent", "AR(1), correlated"))
+  )
+
+# ── Shared axis scales (log-log) ──────────────────────────────────────────
+x_log <- list(
+  scale_x_log10(breaks = c(0.01, 0.02, 0.05, 0.1, 0.2),
+                labels = c("0.01", "0.02", "0.05", "0.1", "0.2")),
+  xlab(expression(delta ~ "(shift magnitude)"))
+)
+y_log <- list(
+  scale_y_log10(),
+  ylab("CAD (log scale)")
+)
+
+# ── Plot J1: Oracle vs misspecified vs bounded ─────────────────────────────
+# Filter: IID (p=0), independent streams, late change (nu=1000)
+j1 <- joint %>% filter(p == 0, independent == TRUE, nu == 1000)
+
+pJ1 <- ggplot(j1, aes(delta, CAD,
+                       colour = detector_label, shape = detector_label)) +
+  geom_line(linewidth = 0.8, na.rm = TRUE) +
+  geom_point(size = 2.0, na.rm = TRUE) +
+  scale_colour_manual(values = det_pal,    name = NULL) +
+  scale_shape_manual( values = det_shapes, name = NULL) +
+  x_log + y_log +
+  facet_grid(K_label ~ sparse_label) +
+  labs(
+    title    = "Oracle vs. misspecified vs. bounded detectors",
+    subtitle = expression(
+      "IID streams (" * italic(p) * " = 0), independent, " *
+      nu * " = 1000, " * alpha * " = 10"^{-4})
+  ) +
+  theme_talk +
+  theme(legend.position = "bottom",
+        strip.text = element_text(face = "bold"))
+
+ggsave(file.path(sim_dir, "joint_oracle_vs_bounded.png"),
+       pJ1, width = 8, height = 6.5, dpi = 220)
+
+# ── Plot J2: Effect of AR(1) (bounded + average combiner) ─────────────────
+# Shows: does serial correlation within streams hurt detection?
+j2 <- joint %>%
+  filter(independent == TRUE, nu == 1000,
+         detector == "bounded", combine == "average")
+
+pJ2 <- ggplot(j2, aes(delta, CAD,
+                       colour = p_label, linetype = p_label)) +
+  geom_line(linewidth = 0.9, na.rm = TRUE) +
+  geom_point(size = 1.8, na.rm = TRUE) +
+  scale_colour_manual(values = p_pal,    name = "AR order") +
+  scale_linetype_manual(values = p_ltypes, name = "AR order") +
+  x_log + y_log +
+  facet_grid(K_label ~ sparse_label) +
+  labs(
+    title    = "Effect of within-stream serial correlation on detection delay",
+    subtitle = expression(
+      "Bounded + average combiner, independent streams, " *
+      nu * " = 1000, " * alpha * " = 10"^{-4})
+  ) +
+  theme_talk +
+  theme(legend.position = "bottom",
+        strip.text = element_text(face = "bold"))
+
+ggsave(file.path(sim_dir, "joint_effect_of_ar.png"),
+       pJ2, width = 8, height = 6.5, dpi = 220)
+
+# ── Plot J3: Effect of cross-stream dependence ─────────────────────────────
+# Compare: independent+average, independent+product, correlated+average.
+# Product is valid only under independence; average is always valid.
+j3 <- joint %>%
+  filter(p == 0, nu == 1000, detector == "bounded") %>%
+  mutate(dep_combine = factor(
+    paste0(ifelse(independent, "indep", "corr"), " + ", combine),
+    levels = c("indep + average", "indep + product", "corr  + average")
+  )) %>%
+  filter(!is.na(dep_combine))   # drop corr+product (not run)
+
+pJ3 <- ggplot(j3, aes(delta, CAD,
+                       colour = dep_combine, shape = dep_combine)) +
+  geom_line(linewidth = 0.8, na.rm = TRUE) +
+  geom_point(size = 2.0, na.rm = TRUE) +
+  scale_colour_manual(values = dep_pal, name = NULL) +
+  scale_shape_manual( values = c(15, 18, 17), name = NULL) +
+  x_log + y_log +
+  facet_grid(K_label ~ sparse_label) +
+  labs(
+    title    = "Effect of cross-stream dependence on detection delay",
+    subtitle = expression(
+      "Bounded combiner, IID observations (" * italic(p) * " = 0), " *
+      nu * " = 1000, " * alpha * " = 10"^{-4})
+  ) +
+  theme_talk +
+  theme(legend.position = "bottom",
+        strip.text = element_text(face = "bold"))
+
+ggsave(file.path(sim_dir, "joint_effect_of_dependence.png"),
+       pJ3, width = 8, height = 6.5, dpi = 220)
+
+# ── Plot J4: Early vs. late change-point (nu = 10 vs nu = 1000) ───────────
+# Fixed: bounded+average, IID, independent, sparse (most interesting)
+j4 <- joint %>%
+  filter(p == 0, independent == TRUE,
+         detector == "bounded", combine == "average") %>%
+  mutate(nu_label = factor(paste0("nu == ", nu),
+                           levels = c("nu == 10", "nu == 1000"),
+                           labels = c(expression(nu == 10),
+                                      expression(nu == 1000))))
+
+pJ4 <- ggplot(j4, aes(delta, CAD,
+                       colour = factor(nu), linetype = factor(nu))) +
+  geom_line(linewidth = 0.9, na.rm = TRUE) +
+  geom_point(size = 1.8, na.rm = TRUE) +
+  scale_colour_manual(values = c("10" = "#e08214", "1000" = "#542788"),
+                      name = expression(nu)) +
+  scale_linetype_manual(values = c("10" = "dashed", "1000" = "solid"),
+                        name = expression(nu)) +
+  x_log + y_log +
+  facet_grid(K_label ~ sparse_label) +
+  labs(
+    title    = "Effect of change-point location on detection delay",
+    subtitle = expression(
+      "Bounded + average combiner, IID, independent, " * alpha * " = 10"^{-4})
+  ) +
+  theme_talk +
+  theme(legend.position = "bottom",
+        strip.text = element_text(face = "bold"))
+
+ggsave(file.path(sim_dir, "joint_effect_of_nu.png"),
+       pJ4, width = 8, height = 6.5, dpi = 220)
+
+# ── Plot L1: Localized detector — global CAD ──────────────────────────────
+# All four combinations of p x independence; nu = 100 (only value available)
+cond_pal <- c(
+  "AR(0), independent" = "#1a9641",
+  "AR(0), correlated"  = "#a6d96a",
+  "AR(1), independent" = "#d7191c",
+  "AR(1), correlated"  = "#fdae61"
+)
+cond_shapes <- c("AR(0), independent" = 16, "AR(0), correlated"  = 17,
+                 "AR(1), independent" = 15, "AR(1), correlated"  = 18)
+
+pL1 <- ggplot(local, aes(delta, CAD,
+                          colour = condition, shape = condition)) +
+  geom_line(linewidth = 0.8, na.rm = TRUE) +
+  geom_point(size = 1.8, na.rm = TRUE) +
+  scale_colour_manual(values = cond_pal,    name = NULL) +
+  scale_shape_manual( values = cond_shapes, name = NULL) +
+  x_log + y_log +
+  facet_grid(K_label ~ sparse_label) +
+  labs(
+    title    = "Localized detector: global conditional average delay",
+    subtitle = expression(
+      "Bonferroni spending across K streams, " *
+      nu * " = 100, " * alpha * " = 10"^{-4})
+  ) +
+  theme_talk +
+  theme(legend.position = "bottom",
+        strip.text = element_text(face = "bold"))
+
+ggsave(file.path(sim_dir, "localized_global_cad.png"),
+       pL1, width = 8, height = 6.5, dpi = 220)
+
+# ── Plot L2: Localized — per-stream CAD for sparse change (K=10) ──────────
+# Highlight stream 1 (the affected stream) vs. unaffected streams 2-10.
+# Reveals whether the localized detector correctly pinpoints the changed stream.
+stream_cols <- paste0("stream_", 1:10, "_CAD")
+l2_wide <- local %>%
+  filter(K == 10, sparse == TRUE, p == 0, independent == TRUE)
+
+l2_long <- l2_wide %>%
+  select(delta, all_of(stream_cols)) %>%
+  pivot_longer(all_of(stream_cols),
+               names_to  = "stream",
+               values_to = "stream_CAD") %>%
+  mutate(
+    stream_id  = as.integer(sub("stream_(\\d+)_CAD", "\\1", stream)),
+    stream_grp = factor(ifelse(stream_id == 1L, "stream 1 (changed)",
+                               "streams 2-10 (unchanged)"),
+                        levels = c("stream 1 (changed)", "streams 2-10 (unchanged)"))
+  )
+
+pL2 <- ggplot(l2_long, aes(delta, stream_CAD, group = stream,
+                             colour = stream_grp, alpha = stream_grp)) +
+  geom_line(linewidth = 0.7, na.rm = TRUE) +
+  scale_colour_manual(values = c("stream 1 (changed)"    = "#d62728",
+                                 "streams 2-10 (unchanged)" = "#7f7f7f"),
+                      name = NULL) +
+  scale_alpha_manual(values = c("stream 1 (changed)" = 1.0,
+                                "streams 2-10 (unchanged)" = 0.45),
+                     name = NULL) +
+  x_log + y_log +
+  labs(
+    title    = "Per-stream CAD: sparse change in K = 10 streams",
+    subtitle = expression(
+      "Only stream 1 has a shift; p = 0, independent, " *
+      nu * " = 100, " * alpha * " = 10"^{-4})
+  ) +
+  theme_talk +
+  theme(legend.position = "bottom")
+
+ggsave(file.path(sim_dir, "localized_stream_cad_sparse.png"),
+       pL2, width = 7, height = 4.5, dpi = 220)
+
+message("Wrote ", sim_dir, "/  (", 6L, " simulation figures)")
+} # end if (file.exists(...))

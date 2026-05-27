@@ -1,3 +1,15 @@
+# Generic: compute_bet
+# purpose: compute the one-step bet lambda_t from a betting strategy and history
+# inputs:
+#   strategy = BettingStrategy subclass instance
+#   history  = numeric vector of past observations X_1,...,X_{t-1} (NULL = empty)
+#   eta      = numeric scalar null mean upper bound, passed from BoundedModel
+# outputs:
+#   numeric scalar lambda >= 0
+setGeneric("compute_bet", function(strategy, history, eta) {
+  standardGeneric("compute_bet")
+})
+
 # Generic: model_density
 # purpose: evaluate pre/post model density (or mass) at new observation(s)
 # inputs:

@@ -377,3 +377,114 @@ setMethod("run_detector", "Detector", function(object, evidence, log = FALSE) {
     log           = log
   )
 })
+
+# Function: run_sr_per_clock
+# purpose: Shiryaev-Roberts statistic where each clock i started at time i uses
+#          its own independent AGRAPA betting sequence.  Specifically,
+#            R_t = sum_{i=1}^{t} M_t^{(i)}
+#          where M_t^{(i)} = prod_{s=i}^{t} m_s^{(i)} and m_s^{(i)} uses only
+#          observations X_i,...,X_{s-1} (windowed to the last `window` steps).
+#          Compared with the standard S-R recursion (all clocks share one bet),
+#          per-clock betting adapts faster after a change because each clock
+#          independently re-learns the post-change mean from its own start time.
+#
+#          Algorithm is O(N * W) time and O(W) space (W = AGRAPABet window).
+#          A finite window is required; pass AGRAPABet(window = 30) (default).
+#
+# inputs:
+#   x         = numeric vector of [0,1]-bounded observations
+#   model     = BoundedModel with AGRAPABet
+#   threshold = positive scalar; alarm when R_t >= threshold (default Inf)
+# outputs:
+#   list(statistic, stopping_time, alarm)
+run_sr_per_clock <- function(x, model, threshold = Inf) {
+  if (!is(model, "BoundedModel") || !is(model@bets, "AGRAPABet"))
+    stop("`model` must be a BoundedModel with AGRAPABet.", call. = FALSE)
+  bets <- model@bets
+  if (!is.finite(bets@window))
+    stop("run_sr_per_clock requires a finite `window` in AGRAPABet (e.g. AGRAPABet(window = 30)).",
+         call. = FALSE)
+
+  x <- as.numeric(x)
+  n <- length(x)
+  if (n == 0L)
+    return(list(statistic = numeric(0), stopping_time = NA_integer_, alarm = FALSE))
+
+  eta    <- model@eta
+  W      <- as.integer(bets@window)
+  c_     <- bets@c
+  eps    <- bets@eps
+  sd_min <- bets@sd_min
+
+  # young[j] = wealth of the clock that is age j at the current time (j = 1,...,W-1)
+  young   <- numeric(max(W - 1L, 0L))
+  old_sum <- 0
+
+  # Rolling buffer: x_buf[j] = x[t - j], j = 1 (most recent) to W (oldest).
+  # Populated by shifting right and inserting x[t] at position 1 after each step.
+  x_buf <- numeric(W)
+
+  statistic <- numeric(n)
+  stop_t    <- NA_integer_
+
+  for (t in seq_len(n)) {
+    xt     <- x[t]
+    n_past <- min(t - 1L, W)
+
+    # --- Compute AGRAPA bets for ages j = 1,...,n_past via suffix statistics ---
+    # x_buf[1..n_past] = x[t-1], x[t-2], ..., x[t-n_past].
+    # Bet for age j uses the last j past observations: x_buf[1..j].
+    # cumsum(x_buf[1..n_past]) gives the suffix sums in O(n_past).
+    if (n_past > 0L) {
+      j_idx  <- seq_len(n_past)
+      xb     <- x_buf[j_idx]
+      s1     <- cumsum(xb)
+      s2     <- cumsum(xb^2)
+      mu_j   <- s1 / j_idx
+      d_j    <- mu_j - eta
+      var_j  <- pmax(s2 / j_idx - mu_j^2, 0)
+      sd_j   <- pmax(sqrt(var_j), sd_min)
+      lam_j  <- pmax(0, pmin(d_j / (sd_j^2 + d_j^2), c_ / (eta + eps)))
+      m_j    <- pmax(1 + lam_j * (xt - eta), .Machine$double.eps)
+    }
+
+    # --- Update old_sum (aggregate wealth of all mature clocks, age >= W) ---
+    # All mature clocks share the same bet (m_j[W]) because their windows overlap.
+    # The clock of age W-1 at t-1 matures and is absorbed before multiplying.
+    # Special case W=1: the clock that was brand-new at t-1 (wealth 1) matures.
+    if (n_past >= W) {
+      maturing <- if (W >= 2L) young[W - 1L] else 1
+      old_sum  <- (old_sum + maturing) * m_j[W]
+    }
+
+    # --- Update young clocks: shift age j-1 -> age j, insert new age-1 clock ---
+    # new young[j] = old young[j-1] * m_j[j]  for j = 2,...,upper
+    # new young[1] = m_j[1]  (clock started at t-1 had wealth 1; now gets first bet)
+    # RHS is evaluated before assignment so in-place update is safe.
+    if (n_past >= 1L && W >= 2L) {
+      upper <- min(n_past, W - 1L)
+      if (upper >= 2L)
+        young[2:upper] <- young[seq_len(upper - 1L)] * m_j[2:upper]
+      young[1L] <- m_j[1L]
+    }
+
+    # --- R_t = new clock (wealth 1) + young clocks + old_sum ---
+    n_active     <- min(n_past, W - 1L)
+    statistic[t] <- 1 +
+      (if (n_active > 0L) sum(young[seq_len(n_active)]) else 0) +
+      old_sum
+
+    # --- Advance rolling buffer: shift right, insert x[t] at position 1 ---
+    if (W > 1L) x_buf[2:W] <- x_buf[seq_len(W - 1L)]
+    x_buf[1L] <- xt
+
+    # --- Check alarm ---
+    if (!is.infinite(threshold) && statistic[t] >= threshold) {
+      stop_t <- t
+      if (t < n) statistic[(t + 1L):n] <- statistic[t]
+      break
+    }
+  }
+
+  list(statistic = statistic, stopping_time = stop_t, alarm = !is.na(stop_t))
+}

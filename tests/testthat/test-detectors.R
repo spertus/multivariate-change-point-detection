@@ -256,3 +256,68 @@ test_that("LocalizedDetector rejects wrong number of columns", {
   ev <- matrix(rep(1.1, 50 * 2), nrow = 50)
   expect_error(run_detector(ld, evidence = ev), "3 column")
 })
+
+# ---- run_sr_per_clock tests -------------------------------------------------
+
+test_that("run_sr_per_clock: hand-computed values match for small example", {
+  # x = c(0.8, 0.9, 0.7), eta=0.5, W=2, c=0.75, sd_min=0.01, eps=1e-5
+  #   t=1: new clock only → R=1
+  #   t=2: lam_1 = AGRAPA({0.8}) = 1.5, m=1.6; R = 1 + 1.6 = 2.6
+  #   t=3: M_3^{(1)} = 1.6*1.3 = 2.08, M_3^{(2)} = 1.3, M_3^{(3)} = 1 → R = 4.38
+  m   <- BoundedModel(eta = 0.5, bets = AGRAPABet(c = 0.75, sd_min = 0.01, eps = 1e-5, window = 2))
+  res <- run_sr_per_clock(c(0.8, 0.9, 0.7), m)
+  expect_equal(res$statistic[1], 1)
+  expect_equal(res$statistic[2], 2.6, tolerance = 1e-4)
+  expect_equal(res$statistic[3], 4.38, tolerance = 1e-4)
+  expect_false(res$alarm)
+  expect_true(is.na(res$stopping_time))
+})
+
+test_that("run_sr_per_clock: R_t >= 1 always", {
+  m   <- BoundedModel(eta = 0.5, bets = AGRAPABet(window = 10))
+  set.seed(7)
+  x   <- runif(100)
+  res <- run_sr_per_clock(x, m)
+  expect_true(all(res$statistic >= 1))
+})
+
+test_that("run_sr_per_clock: statistic is monotone non-decreasing after alarm", {
+  m   <- BoundedModel(eta = 0.5, bets = AGRAPABet(window = 5))
+  x   <- rep(0.95, 200)
+  res <- run_sr_per_clock(x, m, threshold = 50)
+  tau <- res$stopping_time
+  expect_true(is.finite(tau))
+  expect_true(all(res$statistic[tau:length(res$statistic)] == res$statistic[tau]))
+})
+
+test_that("run_sr_per_clock: alarm fires and statistic matches threshold", {
+  m   <- BoundedModel(eta = 0.5, bets = AGRAPABet(window = 5))
+  set.seed(1)
+  x   <- runif(300, 0.75, 1)
+  res <- run_sr_per_clock(x, m, threshold = 1000)
+  expect_true(res$alarm)
+  expect_gte(res$statistic[res$stopping_time], 1000)
+})
+
+test_that("run_sr_per_clock: errors on Inf window", {
+  m <- BoundedModel(eta = 0.5, bets = AGRAPABet(window = Inf))
+  expect_error(run_sr_per_clock(0.8, m), "finite")
+})
+
+test_that("run_sr_per_clock: errors on non-BoundedModel input", {
+  m <- BoundedModel(eta = 0.5, bets = FixedBet(lambda = 0.5))
+  expect_error(run_sr_per_clock(0.8, m), "AGRAPABet")
+})
+
+test_that("run_sr_per_clock: detects a clear change-point", {
+  # 50 pre-change obs near null (0.3–0.5), then 150 post-change obs far above eta=0.5.
+  # Per-clock should alarm well before the horizon of 200.
+  set.seed(42)
+  nu  <- 50
+  x   <- c(runif(nu, 0.3, 0.5), runif(150, 0.8, 1.0))
+  m   <- BoundedModel(eta = 0.5, bets = AGRAPABet(window = 20))
+  res <- run_sr_per_clock(x, m, threshold = 100)
+  expect_true(res$alarm)
+  expect_gte(res$stopping_time, nu)          # should not fire before the change
+  expect_lte(res$stopping_time, nu + 50)     # should fire within 50 steps of change
+})

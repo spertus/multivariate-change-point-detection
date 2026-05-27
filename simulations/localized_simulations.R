@@ -149,9 +149,7 @@ N_REP <- if (RUN_FULL) 300L  else 100L
 stream_arl_names <- paste0("stream_", seq_len(K_MAX), "_ARL")
 stream_cad_names <- paste0("stream_", seq_len(K_MAX), "_CAD")
 
-results <- vector("list", nrow(param_grid))
-
-for (i in seq_len(nrow(param_grid))) {
+.run_condition <- function(i) {
   row <- param_grid[i, ]
   K   <- as.integer(row$K)
   p   <- as.integer(row$p)
@@ -234,12 +232,13 @@ for (i in seq_len(nrow(param_grid))) {
   )
   cond_row <- cbind(cond_row, as.data.frame(t(s_arl)), as.data.frame(t(s_cad)))
 
-  results[[i]] <- cond_row
-
-  if (i %% 5L == 0L)
-    message(sprintf("[%d / %d] p=%d  K=%d  nu=%d  delta=%.3f",
-                    i, nrow(param_grid), p, K, nu, row$delta_norm))
+  message(sprintf("[%d / %d] p=%d  K=%d  nu=%d  delta=%.3f",
+                  i, nrow(param_grid), p, K, nu, row$delta_norm))
+  cond_row
 }
+
+results <- parallel::mclapply(seq_len(nrow(param_grid)),
+                              .run_condition, mc.cores = 2L)
 
 results <- do.call(rbind, results)
 rownames(results) <- NULL

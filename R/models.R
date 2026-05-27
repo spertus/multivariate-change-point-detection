@@ -36,24 +36,19 @@ setClass("BernoulliModel", contains = "UnivariateModel",
          slots = c(p_pre = "numeric", p_post = "numeric"))
 
 # Class: BoundedModel
-# purpose: test martingale model for [0,1]-bounded univariate observations using
-#          AGRAPA bets (Waudby-Smith and Ramdas, 2024).  The one-sided null is
-#          E[X_t] <= eta; post-change alternative is E[X_t] > eta.
-#          Increment at time t: 1 + lambda_t * (X_t - eta) where lambda_t is
-#          the AGRAPA bet computed from the lagged history X_1,...,X_{t-1}.
+# purpose: test martingale model for [0,1]-bounded univariate observations.
+#          The one-sided null is E[X_t] <= eta; alternative is E[X_t] > eta.
+#          Increment at time t: 1 + lambda_t * (X_t - eta), where lambda_t is
+#          determined by the supplied BettingStrategy (default: AGRAPABet).
 # slots:
-#   eta    = null mean upper bound in (0, 1)
-#   c      = AGRAPA truncation factor; bet is capped at c / eta
-#   sd_min = floor on the lagged SD estimate (prevents division by zero)
-#   eps    = small constant added to eta in the cap denominator
+#   eta  = null mean upper bound in (0, 1)
+#   bets = BettingStrategy object that maps history -> lambda_t
 setClass(
   "BoundedModel",
   contains = "UnivariateModel",
   slots = c(
-    eta    = "numeric",
-    c      = "numeric",
-    sd_min = "numeric",
-    eps    = "numeric"
+    eta  = "numeric",
+    bets = "BettingStrategy"
   )
 )
 
@@ -255,27 +250,19 @@ BernoulliModel <- function(p_pre, p_post, name = "bernoulli") {
 }
 
 # Constructor: BoundedModel
-# purpose: builds a [0,1]-bounded test martingale model with AGRAPA bets
+# purpose: builds a [0,1]-bounded test martingale model with a pluggable betting strategy
 # inputs:
-#   eta    = numeric scalar null mean upper bound in (0, 1)
-#   c      = numeric scalar AGRAPA truncation factor in (0, 1], default 0.75
-#   sd_min = numeric scalar floor for the lagged SD estimate, default 0.01
-#   eps    = numeric scalar added to eta in the cap denominator, default 1e-5
-#   name   = character model label
+#   eta  = numeric scalar null mean upper bound in (0, 1)
+#   bets = BettingStrategy object (default: AGRAPABet())
+#   name = character model label
 # outputs:
 #   BoundedModel object
-BoundedModel <- function(eta, c = 0.75, sd_min = 0.01, eps = 1e-5, name = "bounded") {
+BoundedModel <- function(eta, bets = AGRAPABet(), name = "bounded") {
   if (length(eta) != 1L || !is.finite(eta) || eta <= 0 || eta >= 1)
     stop("`eta` must be a scalar in (0, 1).", call. = FALSE)
-  if (length(c) != 1L || !is.finite(c) || c <= 0 || c > 1)
-    stop("`c` must be a scalar in (0, 1].", call. = FALSE)
-  if (length(sd_min) != 1L || sd_min <= 0)
-    stop("`sd_min` must be a positive scalar.", call. = FALSE)
-  if (length(eps) != 1L || eps < 0)
-    stop("`eps` must be a non-negative scalar.", call. = FALSE)
-  new("BoundedModel", name = name,
-      eta = as.numeric(eta), c = as.numeric(c),
-      sd_min = as.numeric(sd_min), eps = as.numeric(eps))
+  if (!is(bets, "BettingStrategy"))
+    stop("`bets` must be a BettingStrategy object.", call. = FALSE)
+  new("BoundedModel", name = name, eta = as.numeric(eta), bets = bets)
 }
 
 # ---- model_density methods ----
@@ -359,30 +346,19 @@ setMethod("likelihood_increment", "Model", function(object, x, history = NULL, l
 })
 
 # Method: likelihood_increment for BoundedModel
-# purpose: AGRAPA betting increment — 1 + lambda_t * (x_t - eta) where lambda_t
-#          is computed from the lagged history using the AGRAPA formula.
-#          When history is empty, lambda_t = 0 and the increment is 1.
+# purpose: betting increment 1 + lambda_t * (x_t - eta), where lambda_t is
+#          determined by the model's BettingStrategy.  Missing observations
+#          (NA) yield an increment of 1 (no evidence update).
 # inputs:
 #   object  = BoundedModel object
-#   x       = scalar observation in [0, 1]
-#   history = numeric vector of past observations X_1, ..., X_{t-1} (or NULL)
+#   x       = scalar observation in [0, 1] (or NA for missing)
+#   history = numeric vector of past observations X_1,...,X_{t-1} (or NULL)
 #   log     = logical; return log-increment when TRUE
 # outputs:
 #   numeric scalar increment (or log-increment)
 setMethod("likelihood_increment", "BoundedModel", function(object, x, history = NULL, log = FALSE) {
-  eta <- object@eta
-  n_h <- if (is.null(history)) 0L else length(as.numeric(history))
-  if (n_h == 0L) {
-    lam <- 0
-  } else {
-    hist_vec <- as.numeric(history)
-    lag_mu   <- mean(hist_vec)
-    lag_sd   <- if (n_h > 1L) sqrt(mean((hist_vec - lag_mu)^2)) else 0
-    lag_sd   <- max(lag_sd, object@sd_min)
-    lam_raw  <- (lag_mu - eta) / (lag_sd^2 + (lag_mu - eta)^2)
-    cap      <- object@c / (eta + object@eps)
-    lam      <- max(0, min(lam_raw, cap))
-  }
-  inc <- max(1 + lam * (as.numeric(x) - eta), .Machine$double.eps)
+  if (is.na(x)) return(if (log) 0 else 1)
+  lam <- compute_bet(object@bets, history, object@eta)
+  inc <- max(1 + lam * (as.numeric(x) - object@eta), .Machine$double.eps)
   if (log) base::log(inc) else inc
 })

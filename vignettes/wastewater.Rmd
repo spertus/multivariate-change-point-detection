@@ -573,21 +573,26 @@ for (k in seq_len(K_sites))
 ```{r pipeline-compare-plot, fig.width=12, fig.height=9}
 library(patchwork)
 
+resid_long <- as.data.frame(resid_matrix) %>%
+  rownames_to_column("site") %>%
+  pivot_longer(-site, names_to = "date_chr", values_to = "resid") %>%
+  mutate(date = as.Date(date_chr))
+
 probit_long <- as.data.frame(probit_matrix) %>%
   rownames_to_column("site") %>%
   pivot_longer(-site, names_to = "date_chr", values_to = "probit") %>%
   mutate(date = as.Date(date_chr))
 
-p_raw <- pipe_long %>%
-  rename(date = weekstart) %>%
-  ggplot(aes(x = date, y = log_ratio, colour = site)) +
+p_raw <- resid_long %>%
+  ggplot(aes(x = date, y = resid, colour = site)) +
   geom_line(linewidth = 0.4, alpha = 0.8, na.rm = TRUE) +
   geom_vline(xintercept = train_end, linetype = "dashed", colour = "grey50") +
+  geom_hline(yintercept = 0, linetype = "dotted", colour = "grey40") +
   facet_wrap(~ site, ncol = 2, scales = "free_y") +
   scale_colour_viridis_d(option = "turbo", guide = "none") +
   scale_x_date(date_breaks = "1 year", date_labels = "%Y") +
-  labs(x = NULL, y = "log(covN2 / RSV)",
-       title = "Raw log-ratio",
+  labs(x = NULL, y = "De-seasonalized residual",
+       title = "De-seasonalized log-ratio residuals",
        subtitle = "Dashed = train / test split (Jan 2025)") +
   theme_bw(base_size = 8) +
   theme(axis.text.x      = element_text(angle = 30, hjust = 1),
@@ -618,7 +623,7 @@ p_raw | p_probit
 ## LocalizedDetector on 2025–2026
 
 ```{r pipeline-detect}
-alpha_global <- 0.01
+alpha_global <- 0.001
 log_thresh   <- log(1 / alpha_global)
 
 # Bonferroni allowance: uniform 1/K per stream
@@ -664,22 +669,24 @@ sr_df <- lapply(seq_len(K_sites), function(k) {
              log_SR = det_out$stream_results[[k]]$statistic)
 }) %>% bind_rows()
 
-# Raw log(covN2/RSV) for the test period
-raw_test_df <- pipe_long %>%
-  filter(site %in% selected_sites, weekstart %in% test_dates) %>%
-  rename(date = weekstart)
+# Probit residuals for test period (long format)
+probit_test_df <- as.data.frame(t(test_mat)) %>%
+  tibble::rownames_to_column("site") %>%
+  tidyr::pivot_longer(-site, names_to = "date_chr", values_to = "probit") %>%
+  dplyr::mutate(date = as.Date(date_chr))
 
-# Panel 1: raw log-ratio with alarm lines
-p_raw <- ggplot(raw_test_df, aes(x = date, y = log_ratio, colour = site)) +
+# Panel 1: probit residuals with null-mean reference and alarm lines
+p_raw <- ggplot(probit_test_df, aes(x = date, y = probit, colour = site)) +
   geom_line(linewidth = 0.5, alpha = 0.85, na.rm = TRUE) +
+  geom_hline(yintercept = 0.5, linetype = "dotted", colour = "grey40") +
   geom_vline(data = alarm_df, aes(xintercept = alarm_date, colour = site),
              linetype = "dashed", linewidth = 0.75) +
-  facet_wrap(~ site, ncol = 3, scales = "free_y") +
+  facet_wrap(~ site, ncol = 3) +
   scale_colour_viridis_d(option = "turbo", guide = "none") +
   scale_x_date(date_breaks = "3 months", date_labels = "%b\n'%y") +
-  labs(x = NULL, y = "log(covN2 / RSV)",
-       title = "Raw COVID/RSV log-ratio — 2025–2026 test period",
-       subtitle = "Dashed line = first S-R alarm for that stream") +
+  labs(x = NULL, y = "Probit residual",
+       title = "Probit-transformed residuals — 2025–2026 test period",
+       subtitle = "Dotted = null mean (0.5); dashed = first S-R alarm") +
   theme_bw(base_size = 9) +
   theme(strip.background = element_rect(fill = "#D6EAF8"),
         strip.text       = element_text(face = "bold", size = 8),
