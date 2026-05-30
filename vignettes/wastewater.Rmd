@@ -556,16 +556,20 @@ train_sd      <- apply(resid_matrix[, train_idx, drop = FALSE], 1, sd, na.rm = T
 probit_matrix <- pnorm(sweep(resid_matrix, 1, train_sd, "/"))
 
 # Test-period matrix: N_test x K_sites (as required by LocalizedDetector)
-test_mat  <- t(probit_matrix[, test_idx, drop = FALSE])
+test_mat   <- t(probit_matrix[, test_idx, drop = FALSE])
 test_dates <- spine_pipe[test_idx]
-N_test    <- nrow(test_mat)
+N_test     <- nrow(test_mat)
 
-# BoundedModel log-increments per stream (eta = 0.5)
+# BoundedModel log-increments per stream using EWMA AGRAPA betting (eta = 0.5).
+# EWMABet with rho = 0.1 gives an effective soft window of ~10 weeks, which
+# lets the bet adapt to post-change drift without being anchored to the long
+# pre-change history that windowed AGRAPA (window = Inf) would accumulate.
 inc_mat <- matrix(NA_real_, nrow = N_test, ncol = K_sites,
                   dimnames = list(NULL, rownames(probit_matrix)))
 for (k in seq_len(K_sites))
-  inc_mat[, k] <- compute_increments(TSM(BoundedModel(eta = 0.5)),
-                                     test_mat[, k], log = TRUE)
+  inc_mat[, k] <- compute_increments(
+    TSM(BoundedModel(eta = 0.5, bets = EWMABet(rho = 0.1))),
+    test_mat[, k], log = TRUE)
 ```
 
 ## Raw vs. transformed streams
@@ -623,7 +627,7 @@ p_raw | p_probit
 ## LocalizedDetector on 2025–2026
 
 ```{r pipeline-detect}
-alpha_global <- 0.001
+alpha_global <- 1/(52 * 5)
 log_thresh   <- log(1 / alpha_global)
 
 # Bonferroni allowance: uniform 1/K per stream
@@ -712,4 +716,83 @@ p_sr <- ggplot(sr_df, aes(x = date, y = log_SR, colour = site)) +
 
 print(p_raw)
 print(p_sr)
+```
+
+---
+
+## Simple threshold baseline
+
+Before the statistical detector, it is worth asking what a completely
+transparent, rule-based approach would find: raise an alarm at site $k$
+the first time its log-covN2 signal exceeds the 95th percentile of its
+own 2023–2025 baseline.  The two chunks below first display the training
+period so the baseline distribution is visible, then apply the rule to
+the 2025–2026 hold-out period.
+
+```{r threshold-baseline-train, fig.height=8, fig.cap="Log-covN2 signal at selected sites during the 2023–2025 training period. The red dashed line marks the site-specific 95th percentile used as the detection threshold."}
+# Raw log-covN2 (already log10-transformed at source) for selected sites
+train_cov <- ww %>%
+  filter(measureid == "covN2", site %in% selected_sites,
+         weekstart >= window_start, weekstart < train_end) %>%
+  select(site, weekstart, w_avg)
+
+# Site-specific 95th-percentile threshold from training data
+site_p95 <- train_cov %>%
+  group_by(site) %>%
+  summarize(p95 = quantile(w_avg, 0.95, na.rm = TRUE), .groups = "drop")
+
+ggplot(train_cov, aes(x = weekstart, y = w_avg, colour = site)) +
+  geom_line(linewidth = 0.5, alpha = 0.85, na.rm = TRUE) +
+  geom_hline(data = site_p95, aes(yintercept = p95),
+             linetype = "dashed", colour = "firebrick", linewidth = 0.7) +
+  facet_wrap(~ site, ncol = 3, scales = "free_y") +
+  scale_colour_viridis_d(option = "turbo", guide = "none") +
+  scale_x_date(date_breaks = "6 months", date_labels = "%b\n'%y") +
+  labs(x = NULL, y = expression(log[10]~"(copies / mL)"),
+       title = "Training period: log-covN2 at selected sites (2023–2025)",
+       subtitle = "Red dashed line = site-specific 95th percentile (detection threshold)") +
+  theme_bw(base_size = 9) +
+  theme(strip.background = element_rect(fill = "#D6EAF8"),
+        strip.text       = element_text(face = "bold", size = 8),
+        panel.grid.minor = element_blank())
+```
+
+```{r threshold-baseline-test, fig.height=8, fig.cap="Log-covN2 signal during the 2025–2026 test period. The red dashed line is the 95th-percentile threshold from 2023–2025 training data; the vertical orange line marks the first week each site exceeds the threshold."}
+test_cov <- ww %>%
+  filter(measureid == "covN2", site %in% selected_sites,
+         weekstart >= train_end, weekstart <= window_end) %>%
+  select(site, weekstart, w_avg)
+
+# First week each site exceeds the training-period 95th percentile
+first_exceed <- test_cov %>%
+  left_join(site_p95, by = "site") %>%
+  filter(!is.na(w_avg), w_avg > p95) %>%
+  group_by(site) %>%
+  slice_min(weekstart, n = 1, with_ties = FALSE) %>%
+  ungroup() %>%
+  rename(alarm_date = weekstart)
+
+cat("=== Simple threshold detections (95th percentile rule) ===\n")
+all_sites_df <- data.frame(site = selected_sites) %>%
+  left_join(first_exceed %>% select(site, alarm_date), by = "site") %>%
+  mutate(alarm_date = ifelse(is.na(alarm_date), "no alarm",
+                             format(alarm_date)))
+print(all_sites_df)
+
+ggplot(test_cov, aes(x = weekstart, y = w_avg, colour = site)) +
+  geom_line(linewidth = 0.5, alpha = 0.85, na.rm = TRUE) +
+  geom_hline(data = site_p95, aes(yintercept = p95),
+             linetype = "dashed", colour = "firebrick", linewidth = 0.7) +
+  geom_vline(data = first_exceed, aes(xintercept = alarm_date),
+             colour = "darkorange", linewidth = 0.9) +
+  facet_wrap(~ site, ncol = 3, scales = "free_y") +
+  scale_colour_viridis_d(option = "turbo", guide = "none") +
+  scale_x_date(date_breaks = "3 months", date_labels = "%b\n'%y") +
+  labs(x = NULL, y = expression(log[10]~"(copies / mL)"),
+       title = "Test period: log-covN2 with 95th-percentile threshold alarms (2025–2026)",
+       subtitle = "Red dashed = training-period 95th percentile; orange = first exceedance") +
+  theme_bw(base_size = 9) +
+  theme(strip.background = element_rect(fill = "#D6EAF8"),
+        strip.text       = element_text(face = "bold", size = 8),
+        panel.grid.minor = element_blank())
 ```

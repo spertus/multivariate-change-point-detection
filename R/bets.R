@@ -89,6 +89,73 @@ setMethod("compute_bet", "FixedBet", function(strategy, history, eta) {
   strategy@lambda
 })
 
+# Class: EWMABet
+# purpose: AGRAPA-style betting using exponential weighted moving averages (EWMA)
+#          for the lagged mean and variance.  Updates are O(1) per observation:
+#            mu_t   = (1 - rho) * mu_{t-1}  + rho * X_{t-1}
+#            v_t    = (1 - rho) * v_{t-1}   + rho * (X_{t-1} - mu_{t-1})^2
+#          The bet at time t is the AGRAPA formula applied to (mu_t, sqrt(v_t)).
+#          Compared with hard-windowed AGRAPA, EWMA is a 'soft window': older
+#          observations are downweighted geometrically rather than dropped.
+# slots:
+#   rho     = smoothing parameter in (0, 1]; small rho = long memory
+#   mu_init = initial mean estimate (default 0.5, the null-boundary midpoint)
+#   v_init  = initial variance estimate (default 0.1)
+#   sd_min  = floor on the EWMA SD to prevent division by zero
+#   c       = truncation factor for the bet cap c / (eta + eps)
+#   eps     = small constant added to eta in the cap denominator
+setClass(
+  "EWMABet",
+  contains = "BettingStrategy",
+  slots    = c(rho = "numeric", mu_init = "numeric", v_init = "numeric",
+               sd_min = "numeric", c = "numeric", eps = "numeric")
+)
+
+# Constructor: EWMABet
+# inputs:
+#   rho     = EWMA smoothing rate in (0, 1]; default 0.1 (slow adaptation, ~10-obs memory)
+#   mu_init = initial mean estimate; default 0.5
+#   v_init  = initial variance estimate; default 0.1
+#   sd_min  = SD floor; default 0.01
+#   c       = truncation factor in (0, 1]; default 0.75
+#   eps     = cap nudge; default 1e-5
+# outputs:
+#   EWMABet object
+EWMABet <- function(rho = 0.1, mu_init = 0.5, v_init = 0.1,
+                    sd_min = 0.01, c = 0.75, eps = 1e-5) {
+  if (length(rho) != 1L || !is.finite(rho) || rho <= 0 || rho > 1)
+    stop("`rho` must be a scalar in (0, 1].", call. = FALSE)
+  if (length(mu_init) != 1L || !is.finite(mu_init))
+    stop("`mu_init` must be a finite scalar.", call. = FALSE)
+  if (length(v_init) != 1L || !is.finite(v_init) || v_init < 0)
+    stop("`v_init` must be a non-negative finite scalar.", call. = FALSE)
+  if (length(sd_min) != 1L || sd_min <= 0)
+    stop("`sd_min` must be a positive scalar.", call. = FALSE)
+  if (length(c) != 1L || !is.finite(c) || c <= 0 || c > 1)
+    stop("`c` must be a scalar in (0, 1].", call. = FALSE)
+  if (length(eps) != 1L || eps < 0)
+    stop("`eps` must be a non-negative scalar.", call. = FALSE)
+  new("EWMABet", rho = as.numeric(rho), mu_init = as.numeric(mu_init),
+      v_init = as.numeric(v_init), sd_min = as.numeric(sd_min),
+      c = as.numeric(c), eps = as.numeric(eps))
+}
+
+# Method: compute_bet for EWMABet
+# Recomputes the full EWMA sequence from history on each call (O(n) per call).
+# The fast path in .ewma_increments_fast avoids this cost for the TSM pipeline.
+setMethod("compute_bet", "EWMABet", function(strategy, history, eta) {
+  mu <- strategy@mu_init
+  v  <- strategy@v_init
+  h  <- if (is.null(history)) numeric(0) else as.numeric(history[!is.na(history)])
+  for (xi in h) {
+    v  <- (1 - strategy@rho) * v  + strategy@rho * (xi - mu)^2
+    mu <- (1 - strategy@rho) * mu + strategy@rho * xi
+  }
+  d  <- mu - eta
+  sd <- max(sqrt(v), strategy@sd_min)
+  max(0, min(d / (sd^2 + d^2), strategy@c / (eta + strategy@eps)))
+})
+
 # Function: compute_kelly_optimal_bet
 # purpose: find the Kelly-optimal bet lambda* that maximises expected log-growth
 #          E_p[log(1 + lambda*(X - eta))] over the feasible interval (0, 1/eta).

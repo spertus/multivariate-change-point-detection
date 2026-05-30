@@ -768,8 +768,10 @@ message("Wrote figures/*.png")
 #     Reads simulations/output/{joint,localized}_sim_results.csv
 #     Saves to figures/simulations/
 # ======================================================================
-sim_dir   <- "figures/simulations"
-if (!dir.exists(sim_dir)) dir.create(sim_dir, recursive = TRUE)
+sim_dir_cad <- "figures/simulations/cad"
+sim_dir_arl <- "figures/simulations/arl"
+if (!dir.exists(sim_dir_cad)) dir.create(sim_dir_cad, recursive = TRUE)
+if (!dir.exists(sim_dir_arl)) dir.create(sim_dir_arl, recursive = TRUE)
 
 joint_csv <- file.path(PKG_DIR, "simulations", "output", "joint_sim_results.csv")
 local_csv <- file.path(PKG_DIR, "simulations", "output", "localized_sim_results.csv")
@@ -866,7 +868,7 @@ pJ1 <- ggplot(j1, aes(delta, CAD,
   theme(legend.position = "bottom",
         strip.text = element_text(face = "bold"))
 
-ggsave(file.path(sim_dir, "joint_oracle_vs_bounded.png"),
+ggsave(file.path(sim_dir_cad, "joint_oracle_vs_bounded.png"),
        pJ1, width = 8, height = 6.5, dpi = 220)
 
 # ── Plot J2: Effect of AR(1) (bounded + average combiner) ─────────────────
@@ -893,7 +895,7 @@ pJ2 <- ggplot(j2, aes(delta, CAD,
   theme(legend.position = "bottom",
         strip.text = element_text(face = "bold"))
 
-ggsave(file.path(sim_dir, "joint_effect_of_ar.png"),
+ggsave(file.path(sim_dir_cad, "joint_effect_of_ar.png"),
        pJ2, width = 8, height = 6.5, dpi = 220)
 
 # ── Plot J3: Effect of cross-stream dependence ─────────────────────────────
@@ -925,7 +927,7 @@ pJ3 <- ggplot(j3, aes(delta, CAD,
   theme(legend.position = "bottom",
         strip.text = element_text(face = "bold"))
 
-ggsave(file.path(sim_dir, "joint_effect_of_dependence.png"),
+ggsave(file.path(sim_dir_cad, "joint_effect_of_dependence.png"),
        pJ3, width = 8, height = 6.5, dpi = 220)
 
 # ── Plot J4: Early vs. late change-point (nu = 10 vs nu = 1000) ───────────
@@ -957,7 +959,7 @@ pJ4 <- ggplot(j4, aes(delta, CAD,
   theme(legend.position = "bottom",
         strip.text = element_text(face = "bold"))
 
-ggsave(file.path(sim_dir, "joint_effect_of_nu.png"),
+ggsave(file.path(sim_dir_cad, "joint_effect_of_nu.png"),
        pJ4, width = 8, height = 6.5, dpi = 220)
 
 # ── Plot L1: Localized detector — global CAD ──────────────────────────────
@@ -989,7 +991,7 @@ pL1 <- ggplot(local, aes(delta, CAD,
   theme(legend.position = "bottom",
         strip.text = element_text(face = "bold"))
 
-ggsave(file.path(sim_dir, "localized_global_cad.png"),
+ggsave(file.path(sim_dir_cad, "localized_global_cad.png"),
        pL1, width = 8, height = 6.5, dpi = 220)
 
 # ── Plot L2: Localized — per-stream CAD for sparse change (K=10) ──────────
@@ -1030,8 +1032,183 @@ pL2 <- ggplot(l2_long, aes(delta, stream_CAD, group = stream,
   theme_talk +
   theme(legend.position = "bottom")
 
-ggsave(file.path(sim_dir, "localized_stream_cad_sparse.png"),
+ggsave(file.path(sim_dir_cad, "localized_stream_cad_sparse.png"),
        pL2, width = 7, height = 4.5, dpi = 220)
 
-message("Wrote ", sim_dir, "/  (", 6L, " simulation figures)")
+message("Wrote figures/simulations/cad/  (", 6L, " joint+localized CAD figures)")
 } # end if (file.exists(...))
+
+# ======================================================================
+# 11. Bounded AGRAPA simulation results
+#     Reads simulations/output/bounded_sim_results.csv  (Section A)
+#           simulations/output/bounded_w_results.csv    (Section B)
+#     Saves to figures/simulations/
+# ======================================================================
+bounded_csv <- file.path(PKG_DIR, "simulations", "output", "bounded_sim_results.csv")
+w_csv       <- file.path(PKG_DIR, "simulations", "output", "bounded_w_results.csv")
+
+if (!file.exists(bounded_csv)) {
+  message("bounded_sim_results.csv not found — skipping section 11.")
+} else {
+
+bounded <- read.csv(bounded_csv, stringsAsFactors = FALSE)
+
+strat_levels <- c("Full AGRAPA", "Window AGRAPA (W=30)", "EWMA (rho=0.10)",
+                   "Per-clock W=30", "Oracle Kelly")
+strat_labels <- c("Full AGRAPA", "Window AGRAPA (W=30)", "EWMA (rho=0.10)",
+                   "Per-clock (W=30)", "Oracle Kelly")
+strat_pal    <- c(
+  "Full AGRAPA"           = "#1f77b4",
+  "Window AGRAPA (W=30)"  = "#ff7f0e",
+  "EWMA (rho=0.10)"       = "#2ca02c",
+  "Per-clock W=30"        = "#d62728",
+  "Oracle Kelly"          = "#9467bd"
+)
+strat_shapes <- c(
+  "Full AGRAPA"           = 16,
+  "Window AGRAPA (W=30)"  = 17,
+  "EWMA (rho=0.10)"       = 15,
+  "Per-clock W=30"        = 18,
+  "Oracle Kelly"          = 8
+)
+
+bounded$strategy <- factor(bounded$strategy, levels = strat_levels,
+                            labels = strat_labels)
+
+# relabel after factor creation
+names(strat_pal)    <- strat_labels
+names(strat_shapes) <- strat_labels
+
+# ── Panel A: CAD vs delta ────────────────────────────────────────────────
+pB_cad <- ggplot(bounded, aes(delta, CAD, colour = strategy, shape = strategy)) +
+  geom_line(linewidth = 0.8, na.rm = TRUE) +
+  geom_point(size = 2.2, na.rm = TRUE) +
+  scale_colour_manual(values = strat_pal,    name = NULL) +
+  scale_shape_manual( values = strat_shapes, name = NULL) +
+  labs(
+    title    = "Conditional average delay — bounded [0,1] change detection",
+    subtitle = expression(
+      "Pre: Uniform(0,1); Post: Beta(4(0.5 + "*delta*"), 4(0.5 - "*delta*"))"~
+      "  "*alpha*" = 0.001, "*nu*" = 50, N = 500"),
+    x = expression(delta ~ "(mean shift)"),
+    y = "CAD"
+  ) +
+  theme_talk
+
+# ── Panel B: computation time vs delta ───────────────────────────────────
+pB_time <- ggplot(bounded, aes(delta, comp_time_ms,
+                                colour = strategy, shape = strategy)) +
+  geom_line(linewidth = 0.8, na.rm = TRUE) +
+  geom_point(size = 2.2, na.rm = TRUE) +
+  scale_colour_manual(values = strat_pal,    name = NULL) +
+  scale_shape_manual( values = strat_shapes, name = NULL) +
+  labs(
+    title = "Computation time per replication",
+    x     = expression(delta ~ "(mean shift)"),
+    y     = "ms / replication"
+  ) +
+  theme_talk
+
+ggsave(file.path(sim_dir_cad, "bounded_cad.png"),
+       pB_cad,  width = 8.5, height = 4.5, dpi = 220)
+ggsave(file.path(sim_dir_cad, "bounded_comp_time.png"),
+       pB_time, width = 8.5, height = 4.5, dpi = 220)
+
+message("Wrote bounded strategy comparison figures (11a, 11b).")
+} # end bounded_csv block
+
+# ── Section B: W-sensitivity ──────────────────────────────────────────────
+if (!file.exists(w_csv)) {
+  message("bounded_w_results.csv not found — skipping section 11b.")
+} else {
+
+w_res <- read.csv(w_csv, stringsAsFactors = FALSE)
+w_res$W             <- factor(w_res$W, levels = c(1, 5, 30, 100))
+w_res$strategy_type <- factor(w_res$strategy_type,
+                               levels = c("Window", "Per-clock"),
+                               labels = c("Window AGRAPA", "Per-clock"))
+
+w_pal    <- c("1" = "#1f77b4", "5" = "#ff7f0e", "30" = "#2ca02c", "100" = "#d62728")
+w_shapes <- c("1" = 16,        "5" = 17,         "30" = 15,        "100" = 18)
+
+pW_cad <- ggplot(w_res, aes(delta, CAD, colour = W, shape = W, group = W)) +
+  geom_line(linewidth = 0.8, na.rm = TRUE) +
+  geom_point(size = 2.0, na.rm = TRUE) +
+  scale_colour_manual(values = w_pal,    name = "Window (W)") +
+  scale_shape_manual( values = w_shapes, name = "Window (W)") +
+  facet_wrap(~ strategy_type) +
+  labs(
+    title    = "CAD vs. delta by window size",
+    subtitle = expression(
+      "Pre: Uniform(0,1); Post: Beta(4(0.5 + "*delta*"), 4(0.5 - "*delta*"))"~
+      "  "*alpha*" = 0.001"),
+    x = expression(delta ~ "(mean shift)"),
+    y = "CAD"
+  ) +
+  theme_talk +
+  theme(strip.text = element_text(face = "bold"))
+
+pW_time <- ggplot(w_res, aes(delta, comp_time_ms, colour = W, shape = W, group = W)) +
+  geom_line(linewidth = 0.8, na.rm = TRUE) +
+  geom_point(size = 2.0, na.rm = TRUE) +
+  scale_colour_manual(values = w_pal,    name = "Window (W)") +
+  scale_shape_manual( values = w_shapes, name = "Window (W)") +
+  facet_wrap(~ strategy_type) +
+  labs(
+    title = "Computation time vs. delta by window size",
+    x     = expression(delta ~ "(mean shift)"),
+    y     = "ms / replication"
+  ) +
+  theme_talk +
+  theme(strip.text = element_text(face = "bold"))
+
+ggsave(file.path(sim_dir_cad, "bounded_w_cad.png"),
+       pW_cad,  width = 9, height = 4.5, dpi = 220)
+ggsave(file.path(sim_dir_cad, "bounded_w_comp_time.png"),
+       pW_time, width = 9, height = 4.5, dpi = 220)
+
+message("Wrote W-sensitivity figures (11c, 11d).")
+} # end w_csv block
+
+# ── Section 11C: change-point location sensitivity ────────────────────────
+nu_csv <- file.path(PKG_DIR, "simulations", "output", "bounded_nu_results.csv")
+if (!file.exists(nu_csv)) {
+  message("bounded_nu_results.csv not found — skipping section 11c.")
+} else {
+
+nu_res <- read.csv(nu_csv, stringsAsFactors = FALSE)
+
+strat_levels_c <- c("Full AGRAPA", "Window AGRAPA (W=30)", "EWMA (rho=0.10)",
+                    "Per-clock W=30", "Oracle Kelly")
+strat_labels_c <- c("Full AGRAPA", "Window AGRAPA (W=30)", "EWMA (rho=0.10)",
+                    "Per-clock (W=30)", "Oracle Kelly")
+strat_pal_c    <- setNames(
+  c("#1f77b4", "#ff7f0e", "#2ca02c", "#d62728", "#9467bd"), strat_labels_c)
+strat_shapes_c <- setNames(c(16, 17, 15, 18, 8), strat_labels_c)
+
+nu_res$strategy <- factor(nu_res$strategy,
+                           levels = strat_levels_c, labels = strat_labels_c)
+nu_res$nu_label <- factor(paste0("nu == ", nu_res$nu),
+                           levels = paste0("nu == ", c(10, 50, 200)))
+
+pC_cad <- ggplot(nu_res, aes(delta, CAD, colour = strategy, shape = strategy)) +
+  geom_line(linewidth = 0.8, na.rm = TRUE) +
+  geom_point(size = 2.2, na.rm = TRUE) +
+  scale_colour_manual(values = strat_pal_c,    name = NULL) +
+  scale_shape_manual( values = strat_shapes_c, name = NULL) +
+  facet_wrap(~ nu_label, labeller = label_parsed) +
+  labs(
+    title    = "Effect of change-point location on detection delay",
+    subtitle = expression(
+      "Full AGRAPA burns in pre-change bet as "*nu*" grows; windowed strategies adapt faster"),
+    x = expression(delta ~ "(mean shift)"),
+    y = "CAD"
+  ) +
+  theme_talk +
+  theme(strip.text = element_text(face = "bold"))
+
+ggsave(file.path(sim_dir_cad, "bounded_nu_cad.png"),
+       pC_cad, width = 10, height = 4.5, dpi = 220)
+
+message("Wrote nu-sensitivity figure (11c).")
+} # end nu_csv block

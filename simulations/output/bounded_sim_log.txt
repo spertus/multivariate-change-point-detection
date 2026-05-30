@@ -1,0 +1,26 @@
+Section A: 500 reps x 6 deltas x 5 strategies
+DGP: pre=Uniform(0,1), post=Beta(4*(0.5+d), 4*(0.5-d)), eta=0.5
+
+delta=0.05 ... 5.1 sec
+delta=0.10 ... 4.2 sec
+delta=0.15 ... 4.0 sec
+delta=0.20 ... 3.9 sec
+delta=0.30 ... 3.9 sec
+delta=0.40 ... 3.9 sec
+
+Section A results saved.
+
+Section B: 300 reps x 6 deltas x 4 W-values x 2 strategies
+
+W =   1: done
+W =   5: done
+W =  30: done
+W = 100: done
+Section B results saved.
+
+Section C: 300 reps x 6 deltas x 3 nu values x 5 strategies
+
+nu =  10: done
+nu =  50: done
+nu = 200: done
+Section C results saved.

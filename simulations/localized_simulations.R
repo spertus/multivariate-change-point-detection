@@ -100,9 +100,12 @@ N_REP <- if (RUN_FULL) 300L  else 100L
 
   # BoundedModel TSM increments: one column per stream
   inc_mat <- matrix(NA_real_, nrow = N, ncol = K)
-  for (k in seq_len(K))
-    inc_mat[, k] <- compute_increments(TSM(BoundedModel(eta = eta_vec[k])),
-                                       x[, k], log = TRUE)
+  for (k in seq_len(K)) {
+    bm_k         <- BoundedModel(eta = eta_vec[k],
+                                  bets = EWMABet(rho = 0.1,
+                                                 mu_init = eta_vec[k]))
+    inc_mat[, k] <- compute_increments(TSM(bm_k), x[, k], log = TRUE)
+  }
 
   # K independent S-R detectors at Bonferroni-corrected level alpha/K,
   # each resetting after alarms so post-change detection is not blocked.
@@ -238,7 +241,7 @@ stream_cad_names <- paste0("stream_", seq_len(K_MAX), "_CAD")
 }
 
 results <- parallel::mclapply(seq_len(nrow(param_grid)),
-                              .run_condition, mc.cores = 2L)
+                              .run_condition, mc.cores = 8L)
 
 results <- do.call(rbind, results)
 rownames(results) <- NULL

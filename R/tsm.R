@@ -83,6 +83,53 @@ ConformalTSM <- function(...) stop("ConformalTSM is not yet implemented.", call.
   if (log) base::log(inc) else inc
 }
 
+# Fast path: BoundedModel + FixedBet — fully vectorised, O(N).
+# Lambda is constant so each increment is computed in one expression, no loop.
+.fixedbet_increments_fast <- function(model, x, log) {
+  lam <- model@bets@lambda
+  eta <- model@eta
+  x   <- as.numeric(x)
+  .assert_numeric_vector(x, "x")
+  inc <- ifelse(!is.na(x),
+                pmax(1 + lam * (x - eta), .Machine$double.eps),
+                1)
+  if (log) base::log(inc) else inc
+}
+
+# Fast path: BoundedModel + EWMABet — O(N) sequential EWMA update.
+# EWMA recursion (predictable: uses X_{t-1} to update before observing X_t):
+#   mu_t = (1-rho)*mu_{t-1} + rho*X_{t-1}
+#   v_t  = (1-rho)*v_{t-1}  + rho*(X_{t-1} - mu_{t-1})^2
+# NA observations are skipped: EWMA state is not updated on NA.
+.ewma_increments_fast <- function(model, x, log) {
+  bets <- model@bets   # EWMABet
+  x    <- as.numeric(x)
+  .assert_numeric_vector(x, "x")
+  n   <- length(x)
+  eta <- model@eta
+  rho <- bets@rho
+  mu  <- bets@mu_init
+  v   <- bets@v_init
+
+  inc <- numeric(n)
+  for (t in seq_len(n)) {
+    xt <- x[t]
+    # Bet using current predictable (lagged) EWMA estimates
+    d      <- mu - eta
+    sd_hat <- max(sqrt(v), bets@sd_min)
+    lam    <- max(0, min(d / (sd_hat^2 + d^2), bets@c / (eta + bets@eps)))
+    if (!is.na(xt)) {
+      inc[t] <- max(1 + lam * (xt - eta), .Machine$double.eps)
+      # Update EWMA state: new estimate incorporates X_t for the NEXT step
+      v  <- (1 - rho) * v  + rho * (xt - mu)^2
+      mu <- (1 - rho) * mu + rho * xt
+    } else {
+      inc[t] <- 1   # missing → no evidence, EWMA state unchanged
+    }
+  }
+  if (log) base::log(inc) else inc
+}
+
 # Fast path: GaussianVARModel — O(N * K^2) vectorised log-LR computation.
 # Builds the full N-by-K conditional mean matrix for pre and post in one pass,
 # then computes all N Mahalanobis distances at once.
@@ -147,6 +194,12 @@ setMethod("compute_increments", "TSM", function(object, x, log = FALSE) {
   if (is(model, "BoundedModel") && is.null(dim(x)) &&
         is(model@bets, "AGRAPABet"))
     return(.bounded_increments_fast(model, x, log))
+  if (is(model, "BoundedModel") && is.null(dim(x)) &&
+        is(model@bets, "EWMABet"))
+    return(.ewma_increments_fast(model, x, log))
+  if (is(model, "BoundedModel") && is.null(dim(x)) &&
+        is(model@bets, "FixedBet"))
+    return(.fixedbet_increments_fast(model, x, log))
 
   # Generic loop — used for BernoulliModel, BoundedModel with non-AGRAPA bets,
   # and any future Model subclasses.
