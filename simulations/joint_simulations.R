@@ -106,8 +106,10 @@ N_REP <- if (RUN_FULL) 300L  else 100L
     # BoundedModel: K separate streams, then combine (average or product only)
     inc_mat <- matrix(NA_real_, nrow = N, ncol = K)
     for (k in seq_len(K))
-      inc_mat[, k] <- compute_increments(TSM(BoundedModel(eta = eta_vec[k])),
-                                         x[, k], log = TRUE)
+      inc_mat[, k] <- compute_increments(
+        TSM(BoundedModel(eta = eta_vec[k],
+                         bets = EWMABet(rho = 0.1, mu_init = eta_vec[k]))),
+        x[, k], log = TRUE)
 
     inc <- if (K == 1L) {
       inc_mat[, 1L]
@@ -137,9 +139,7 @@ N_REP <- if (RUN_FULL) 300L  else 100L
 
 # ── 4. Main simulation loop ──────────────────────────────────────────────────
 
-results <- vector("list", nrow(param_grid))
-
-for (i in seq_len(nrow(param_grid))) {
+.run_condition <- function(i) {
   row  <- param_grid[i, ]
   K    <- as.integer(row$K)
   p    <- as.integer(row$p)
@@ -228,12 +228,13 @@ for (i in seq_len(nrow(param_grid))) {
     )
   }
 
-  results[[i]] <- do.call(rbind, cond_rows)
-
-  if (i %% 5L == 0L)
-    message(sprintf("[%d / %d] p=%d  K=%d  nu=%d  delta=%.3f",
-                    i, nrow(param_grid), p, K, nu, row$delta_norm))
+  message(sprintf("[%d / %d] p=%d  K=%d  nu=%d  delta=%.3f",
+                  i, nrow(param_grid), p, K, nu, row$delta_norm))
+  do.call(rbind, cond_rows)
 }
+
+results <- parallel::mclapply(seq_len(nrow(param_grid)),
+                              .run_condition, mc.cores = 8L)
 
 results <- do.call(rbind, results)
 

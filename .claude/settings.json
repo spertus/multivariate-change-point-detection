@@ -1,0 +1,9 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(Rscript -e ' *)",
+      "Bash(read func *)",
+      "Bash(Rscript -e \"library\\(multichangepoints\\); library\\(testthat\\); test_file\\('tests/testthat/test-bounded.R', reporter='progress'\\)\")"
+    ]
+  }
+}

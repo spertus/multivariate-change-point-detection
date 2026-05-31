@@ -14,6 +14,7 @@ suppressPackageStartupMessages({
   library(dplyr)
   library(tidyr)
   library(readr)
+  library(patchwork)
 })
 
 # ----------------------------------------------------------------------
@@ -348,6 +349,105 @@ p2 <- ggplot(sp$df, aes(t, logR)) +
        x = "t", y = expression(log~R[t])) +
   theme_talk
 ggsave("figures/sr_procedure.png", p2, width = 9, height = 4.2, dpi = 220)
+
+# ======================================================================
+# 2b. S-R procedure illustration — three stacked panels
+#     Panel 1: log TSM path (decreases pre-change, recovers post-change)
+#     Panel 2: log increments (bars, coloured by sign)
+#     Panel 3: log S-R statistic with threshold and alarm marker
+# ======================================================================
+set.seed(7)
+N_ill   <- 200L
+nu_ill  <- 100L
+delta_ill <- 0.45
+alpha_ill <- 0.001
+
+model_ill <- GaussianModel(mean_pre = 0, sd_pre = 1,
+                           mean_post = delta_ill, sd_post = 1)
+x_ill  <- c(rnorm(nu_ill, 0, 1),
+            rnorm(N_ill - nu_ill, delta_ill, 1))
+inc_ill <- compute_increments(TSM(model_ill), x_ill, log = TRUE)
+logM_ill <- increments_to_tsm(inc_ill, log = TRUE)
+
+sr_ill   <- ShiryaevRobertsDetector(alpha = alpha_ill, criterion = "ARL")
+sr_out   <- run_detector(sr_ill, inc_ill, log = TRUE)
+log_sr   <- sr_out$statistic
+alarm_t  <- sr_out$stopping_time   # finite for this seed
+log_thr  <- log(1 / alpha_ill)     # log(1000) ≈ 6.9
+
+t_seq  <- seq_len(N_ill)
+period <- factor(ifelse(t_seq <= nu_ill, "pre-change", "post-change"),
+                 levels = c("pre-change", "post-change"))
+pre_post_pal <- c("pre-change" = "#457b9d", "post-change" = "#e63946")
+
+# -- Panel 1: log TSM -------------------------------------------------
+p_tsm_ill <- ggplot(data.frame(t = t_seq, logM = logM_ill, period = period),
+                    aes(t, logM, colour = period)) +
+  geom_line(linewidth = 0.7) +
+  geom_vline(xintercept = nu_ill, linetype = "dashed",
+             colour = "grey30", linewidth = 0.7) +
+  annotate("text", x = nu_ill + 2, y = max(logM_ill) * 0.88,
+           label = "nu", parse = TRUE, hjust = 0,
+           colour = "grey20", size = 4.5) +
+  scale_colour_manual(values = pre_post_pal, name = NULL) +
+  labs(x = NULL, y = expression(log~M[t]),
+       title = "Log test supermartingale  (martingale under H₀, grows under H₁)") +
+  theme_talk +
+  theme(legend.position = "top", axis.text.x = element_blank(),
+        axis.ticks.x = element_blank())
+
+# -- Panel 2: log increments ------------------------------------------
+df_inc_ill <- data.frame(t = t_seq, inc = inc_ill,
+                         sign = factor(ifelse(inc_ill >= 0,
+                                              "positive", "negative")))
+p_inc_ill <- ggplot(df_inc_ill, aes(t, inc, fill = sign)) +
+  geom_col(width = 1, alpha = 0.8) +
+  geom_hline(yintercept = 0, colour = "grey20", linewidth = 0.35) +
+  geom_vline(xintercept = nu_ill, linetype = "dashed",
+             colour = "grey30", linewidth = 0.7) +
+  scale_fill_manual(
+    values  = c("positive" = "#2ca02c", "negative" = "#d62728"),
+    guide   = "none") +
+  labs(x = NULL, y = expression(log~m[t]),
+       title = "Log likelihood increments  (green = positive, red = negative)") +
+  theme_talk +
+  theme(axis.text.x = element_blank(), axis.ticks.x = element_blank())
+
+# -- Panel 3: log S-R statistic ---------------------------------------
+y_top_sr <- max(max(log_sr, na.rm = TRUE), log_thr) * 1.15
+p_sr_ill <- ggplot(data.frame(t = t_seq, logR = log_sr), aes(t, logR)) +
+  geom_line(colour = "#1f77b4", linewidth = 0.75) +
+  geom_hline(yintercept = log_thr, linetype = "dotted",
+             colour = "grey20", linewidth = 0.75) +
+  geom_vline(xintercept = nu_ill, linetype = "dashed",
+             colour = "grey30", linewidth = 0.7) +
+  geom_vline(xintercept = alarm_t, colour = "#2a9d8f", linewidth = 1.1) +
+  annotate("text", x = nu_ill + 2, y = y_top_sr * 0.92,
+           label = "nu", parse = TRUE, hjust = 0,
+           colour = "grey20", size = 4.5) +
+  annotate("text", x = alarm_t + 2, y = y_top_sr * 0.92,
+           label = sprintf("alarm\n(t = %d)", alarm_t),
+           hjust = 0, size = 3.6, colour = "#2a9d8f") +
+  annotate("text", x = 2, y = log_thr * 1.1,
+           label = "threshold = log(1/alpha)",
+           hjust = 0, size = 3.2, colour = "grey20") +
+  coord_cartesian(ylim = c(NA, y_top_sr)) +
+  labs(x = "time  t", y = expression(log~R[t]),
+       title = sprintf(
+         "Log Shiryaev–Roberts statistic  (alarm at t = %d)", alarm_t)) +
+  theme_talk
+
+# -- Combine with patchwork ------------------------------------------
+p_sr_combined <- p_tsm_ill / p_inc_ill / p_sr_ill +
+  plot_annotation(
+    title    = "The Shiryaev–Roberts sequential detection procedure",
+    subtitle = sprintf(
+      "Gaussian model: delta = %.2f,  nu = %d,  alpha = %.3f (ARL threshold = %g)",
+      delta_ill, nu_ill, alpha_ill, round(1 / alpha_ill))
+  )
+
+ggsave("figures/sr_procedure_illustration.png",
+       p_sr_combined, width = 9, height = 10, dpi = 220)
 
 # ======================================================================
 # 3. Spending schedules: shapes + the corresponding PFA-controlled detectors
@@ -762,3 +862,524 @@ placeholder("figures/ww_localization_placeholder.png",
             w = 7, h = 4.0)
 
 message("Wrote figures/*.png")
+
+# ======================================================================
+# 10. Joint + localized simulation results
+#     Reads simulations/output/{joint,localized}_sim_results.csv
+#     Saves to figures/simulations/
+# ======================================================================
+sim_dir_cad <- "figures/simulations/cad"
+sim_dir_arl <- "figures/simulations/arl"
+if (!dir.exists(sim_dir_cad)) dir.create(sim_dir_cad, recursive = TRUE)
+if (!dir.exists(sim_dir_arl)) dir.create(sim_dir_arl, recursive = TRUE)
+
+joint_csv <- file.path(PKG_DIR, "simulations", "output", "joint_sim_results.csv")
+local_csv <- file.path(PKG_DIR, "simulations", "output", "localized_sim_results.csv")
+
+if (!file.exists(joint_csv) || !file.exists(local_csv)) {
+  message("Simulation CSVs not found — skipping section 10.")
+} else {
+
+joint_raw <- read.csv(joint_csv,  stringsAsFactors = FALSE)
+local_raw <- read.csv(local_csv,  stringsAsFactors = FALSE)
+
+# ── Shared colour / shape palettes ────────────────────────────────────────
+det_pal <- c(
+  "oracle"           = "#1f77b4",
+  "misspecified"     = "#d62728",
+  "bounded: average" = "#2ca02c",
+  "bounded: product" = "#ff7f0e"
+)
+det_shapes <- c("oracle" = 16, "misspecified" = 17,
+                "bounded: average" = 15, "bounded: product" = 18)
+
+dep_pal <- c(
+  "indep + average" = "#2ca02c",
+  "indep + product" = "#ff7f0e",
+  "corr  + average" = "#9467bd"
+)
+
+p_pal    <- c("AR(0)" = "#2c7bb6", "AR(1)" = "#d7191c")
+p_ltypes <- c("AR(0)" = "solid",   "AR(1)" = "dashed")
+
+# ── Tidy joint data ───────────────────────────────────────────────────────
+joint <- joint_raw %>%
+  filter(delta > 0) %>%
+  mutate(
+    detector_label = case_when(
+      detector == "oracle"  ~ "oracle",
+      detector == "misspec" ~ "misspecified",
+      detector == "bounded" & combine == "average" ~ "bounded: average",
+      detector == "bounded" & combine == "product" ~ "bounded: product"
+    ),
+    detector_label = factor(detector_label, levels = names(det_pal)),
+    K_label     = factor(paste0("K = ", K),   levels = c("K = 2", "K = 10")),
+    sparse_label = factor(ifelse(sparse, "sparse change", "dense change"),
+                          levels = c("sparse change", "dense change")),
+    p_label     = factor(paste0("AR(", p, ")"), levels = c("AR(0)", "AR(1)"))
+  )
+
+# ── Tidy localized data ───────────────────────────────────────────────────
+local <- local_raw %>%
+  filter(delta > 0) %>%
+  mutate(
+    K_label     = factor(paste0("K = ", K),   levels = c("K = 2", "K = 10")),
+    sparse_label = factor(ifelse(sparse, "sparse change", "dense change"),
+                          levels = c("sparse change", "dense change")),
+    p_label     = factor(paste0("AR(", p, ")"), levels = c("AR(0)", "AR(1)")),
+    dep_label   = factor(ifelse(independent, "independent", "correlated"),
+                         levels = c("independent", "correlated")),
+    condition   = factor(
+      paste0("AR(", p, "), ", ifelse(independent, "independent", "correlated")),
+      levels = c("AR(0), independent", "AR(0), correlated",
+                 "AR(1), independent", "AR(1), correlated"))
+  )
+
+# ── Shared axis scales (log-log) ──────────────────────────────────────────
+x_log <- list(
+  scale_x_log10(breaks = c(0.01, 0.02, 0.05, 0.1, 0.2),
+                labels = c("0.01", "0.02", "0.05", "0.1", "0.2")),
+  xlab(expression(delta ~ "(shift magnitude)"))
+)
+y_log <- list(
+  scale_y_log10(),
+  ylab("CAD (log scale)")
+)
+
+# ── Plot J1: Oracle vs misspecified vs bounded ─────────────────────────────
+# Filter: IID (p=0), independent streams, late change (nu=1000)
+j1 <- joint %>% filter(p == 0, independent == TRUE, nu == 1000)
+
+pJ1 <- ggplot(j1, aes(delta, CAD,
+                       colour = detector_label, shape = detector_label)) +
+  geom_line(linewidth = 0.8, na.rm = TRUE) +
+  geom_point(size = 2.0, na.rm = TRUE) +
+  scale_colour_manual(values = det_pal,    name = NULL) +
+  scale_shape_manual( values = det_shapes, name = NULL) +
+  x_log + y_log +
+  facet_grid(K_label ~ sparse_label) +
+  labs(
+    title    = "Oracle vs. misspecified vs. bounded detectors",
+    subtitle = expression(
+      "IID streams (" * italic(p) * " = 0), independent, " *
+      nu * " = 1000, " * alpha * " = 10"^{-4})
+  ) +
+  theme_talk +
+  theme(legend.position = "bottom",
+        strip.text = element_text(face = "bold"))
+
+ggsave(file.path(sim_dir_cad, "joint_oracle_vs_bounded.png"),
+       pJ1, width = 8, height = 6.5, dpi = 220)
+
+# ── Plot J2: Effect of AR(1) (bounded + average combiner) ─────────────────
+# Shows: does serial correlation within streams hurt detection?
+j2 <- joint %>%
+  filter(independent == TRUE, nu == 1000,
+         detector == "bounded", combine == "average")
+
+pJ2 <- ggplot(j2, aes(delta, CAD,
+                       colour = p_label, linetype = p_label)) +
+  geom_line(linewidth = 0.9, na.rm = TRUE) +
+  geom_point(size = 1.8, na.rm = TRUE) +
+  scale_colour_manual(values = p_pal,    name = "AR order") +
+  scale_linetype_manual(values = p_ltypes, name = "AR order") +
+  x_log + y_log +
+  facet_grid(K_label ~ sparse_label) +
+  labs(
+    title    = "Effect of within-stream serial correlation on detection delay",
+    subtitle = expression(
+      "Bounded + average combiner, independent streams, " *
+      nu * " = 1000, " * alpha * " = 10"^{-4})
+  ) +
+  theme_talk +
+  theme(legend.position = "bottom",
+        strip.text = element_text(face = "bold"))
+
+ggsave(file.path(sim_dir_cad, "joint_effect_of_ar.png"),
+       pJ2, width = 8, height = 6.5, dpi = 220)
+
+# ── Plot J3: Effect of cross-stream dependence ─────────────────────────────
+# Compare: independent+average, independent+product, correlated+average.
+# Product is valid only under independence; average is always valid.
+j3 <- joint %>%
+  filter(p == 0, nu == 1000, detector == "bounded") %>%
+  mutate(dep_combine = factor(
+    paste0(ifelse(independent, "indep", "corr"), " + ", combine),
+    levels = c("indep + average", "indep + product", "corr  + average")
+  )) %>%
+  filter(!is.na(dep_combine))   # drop corr+product (not run)
+
+pJ3 <- ggplot(j3, aes(delta, CAD,
+                       colour = dep_combine, shape = dep_combine)) +
+  geom_line(linewidth = 0.8, na.rm = TRUE) +
+  geom_point(size = 2.0, na.rm = TRUE) +
+  scale_colour_manual(values = dep_pal, name = NULL) +
+  scale_shape_manual( values = c(15, 18, 17), name = NULL) +
+  x_log + y_log +
+  facet_grid(K_label ~ sparse_label) +
+  labs(
+    title    = "Effect of cross-stream dependence on detection delay",
+    subtitle = expression(
+      "Bounded combiner, IID observations (" * italic(p) * " = 0), " *
+      nu * " = 1000, " * alpha * " = 10"^{-4})
+  ) +
+  theme_talk +
+  theme(legend.position = "bottom",
+        strip.text = element_text(face = "bold"))
+
+ggsave(file.path(sim_dir_cad, "joint_effect_of_dependence.png"),
+       pJ3, width = 8, height = 6.5, dpi = 220)
+
+# ── Plot J4: Early vs. late change-point (nu = 10 vs nu = 1000) ───────────
+# Fixed: bounded+average, IID, independent, sparse (most interesting)
+j4 <- joint %>%
+  filter(p == 0, independent == TRUE,
+         detector == "bounded", combine == "average") %>%
+  mutate(nu_label = factor(paste0("nu == ", nu),
+                           levels = c("nu == 10", "nu == 1000"),
+                           labels = c(expression(nu == 10),
+                                      expression(nu == 1000))))
+
+pJ4 <- ggplot(j4, aes(delta, CAD,
+                       colour = factor(nu), linetype = factor(nu))) +
+  geom_line(linewidth = 0.9, na.rm = TRUE) +
+  geom_point(size = 1.8, na.rm = TRUE) +
+  scale_colour_manual(values = c("10" = "#e08214", "1000" = "#542788"),
+                      name = expression(nu)) +
+  scale_linetype_manual(values = c("10" = "dashed", "1000" = "solid"),
+                        name = expression(nu)) +
+  x_log + y_log +
+  facet_grid(K_label ~ sparse_label) +
+  labs(
+    title    = "Effect of change-point location on detection delay",
+    subtitle = expression(
+      "Bounded + average combiner, IID, independent, " * alpha * " = 10"^{-4})
+  ) +
+  theme_talk +
+  theme(legend.position = "bottom",
+        strip.text = element_text(face = "bold"))
+
+ggsave(file.path(sim_dir_cad, "joint_effect_of_nu.png"),
+       pJ4, width = 8, height = 6.5, dpi = 220)
+
+# ── Plot L1: Localized detector — global CAD ──────────────────────────────
+# All four combinations of p x independence; nu = 100 (only value available)
+cond_pal <- c(
+  "AR(0), independent" = "#1a9641",
+  "AR(0), correlated"  = "#a6d96a",
+  "AR(1), independent" = "#d7191c",
+  "AR(1), correlated"  = "#fdae61"
+)
+cond_shapes <- c("AR(0), independent" = 16, "AR(0), correlated"  = 17,
+                 "AR(1), independent" = 15, "AR(1), correlated"  = 18)
+
+pL1 <- ggplot(local, aes(delta, CAD,
+                          colour = condition, shape = condition)) +
+  geom_line(linewidth = 0.8, na.rm = TRUE) +
+  geom_point(size = 1.8, na.rm = TRUE) +
+  scale_colour_manual(values = cond_pal,    name = NULL) +
+  scale_shape_manual( values = cond_shapes, name = NULL) +
+  x_log + y_log +
+  facet_grid(K_label ~ sparse_label) +
+  labs(
+    title    = "Localized detector: global conditional average delay",
+    subtitle = expression(
+      "Bonferroni spending across K streams, " *
+      nu * " = 100, " * alpha * " = 10"^{-4})
+  ) +
+  theme_talk +
+  theme(legend.position = "bottom",
+        strip.text = element_text(face = "bold"))
+
+ggsave(file.path(sim_dir_cad, "localized_global_cad.png"),
+       pL1, width = 8, height = 6.5, dpi = 220)
+
+# ── Plot L2: Localized — per-stream CAD for sparse change (K=10) ──────────
+# Highlight stream 1 (the affected stream) vs. unaffected streams 2-10.
+# Reveals whether the localized detector correctly pinpoints the changed stream.
+stream_cols <- paste0("stream_", 1:10, "_CAD")
+l2_wide <- local %>%
+  filter(K == 10, sparse == TRUE, p == 0, independent == TRUE)
+
+l2_long <- l2_wide %>%
+  select(delta, all_of(stream_cols)) %>%
+  pivot_longer(all_of(stream_cols),
+               names_to  = "stream",
+               values_to = "stream_CAD") %>%
+  mutate(
+    stream_id  = as.integer(sub("stream_(\\d+)_CAD", "\\1", stream)),
+    stream_grp = factor(ifelse(stream_id == 1L, "stream 1 (changed)",
+                               "streams 2-10 (unchanged)"),
+                        levels = c("stream 1 (changed)", "streams 2-10 (unchanged)"))
+  )
+
+pL2 <- ggplot(l2_long, aes(delta, stream_CAD, group = stream,
+                             colour = stream_grp, alpha = stream_grp)) +
+  geom_line(linewidth = 0.7, na.rm = TRUE) +
+  scale_colour_manual(values = c("stream 1 (changed)"    = "#d62728",
+                                 "streams 2-10 (unchanged)" = "#7f7f7f"),
+                      name = NULL) +
+  scale_alpha_manual(values = c("stream 1 (changed)" = 1.0,
+                                "streams 2-10 (unchanged)" = 0.45),
+                     name = NULL) +
+  x_log + y_log +
+  labs(
+    title    = "Per-stream CAD: sparse change in K = 10 streams",
+    subtitle = expression(
+      "Only stream 1 has a shift; p = 0, independent, " *
+      nu * " = 100, " * alpha * " = 10"^{-4})
+  ) +
+  theme_talk +
+  theme(legend.position = "bottom")
+
+ggsave(file.path(sim_dir_cad, "localized_stream_cad_sparse.png"),
+       pL2, width = 7, height = 4.5, dpi = 220)
+
+message("Wrote figures/simulations/cad/  (", 6L, " joint+localized CAD figures)")
+} # end if (file.exists(...))
+
+# ======================================================================
+# 10b. ARL vs delta under different AR(p) settings
+#      Shows false-alarm control (delta = 0) and how ARL drops as the
+#      signal grows, for AR(0) vs AR(1) and each detector variant.
+#      Reads simulations/output/joint_sim_results.csv
+#      Saves to figures/simulations/arl/
+# ======================================================================
+if (!file.exists(joint_csv)) {
+  message("joint_sim_results.csv not found — skipping ARL figure.")
+} else {
+
+# Include delta = 0 so the null ARL (≈ 1/alpha) is visible
+joint_arl <- read.csv(joint_csv, stringsAsFactors = FALSE) %>%
+  mutate(
+    detector_label = case_when(
+      detector == "oracle"  ~ "oracle",
+      detector == "misspec" ~ "misspecified",
+      detector == "bounded" & combine == "average" ~ "bounded: average",
+      detector == "bounded" & combine == "product" ~ "bounded: product"
+    ),
+    detector_label = factor(detector_label, levels = names(det_pal)),
+    K_label      = factor(paste0("K = ", K),
+                          levels = c("K = 2", "K = 10")),
+    sparse_label = factor(ifelse(sparse, "sparse change", "dense change"),
+                          levels = c("sparse change", "dense change")),
+    p_label      = factor(paste0("AR(", p, ")"),
+                          levels = c("AR(0)", "AR(1)"))
+  ) %>%
+  filter(independent == TRUE, nu == 1000)
+
+# Reference line: nominal 1/alpha ARL under H0
+arl_nominal <- unique(joint_arl$alpha)
+arl_ref     <- 1 / arl_nominal   # = 10 000
+
+pARL <- ggplot(joint_arl,
+               aes(delta, ARL, colour = detector_label,
+                   shape = detector_label, linetype = p_label)) +
+  geom_hline(yintercept = arl_ref, linetype = "dotted",
+             colour = "grey40", linewidth = 0.6) +
+  annotate("text", x = min(joint_arl$delta[joint_arl$delta > 0]),
+           y = arl_ref * 1.15, label = "1/alpha",
+           parse = TRUE, hjust = 0, size = 3.2, colour = "grey40") +
+  geom_line(linewidth = 0.75, na.rm = TRUE) +
+  geom_point(size = 1.8, na.rm = TRUE) +
+  scale_colour_manual(values = det_pal,    name = NULL) +
+  scale_shape_manual( values = det_shapes, name = NULL) +
+  scale_linetype_manual(values = c("AR(0)" = "solid", "AR(1)" = "dashed"),
+                        name = "AR order") +
+  scale_x_log10(breaks = c(0, 0.01, 0.02, 0.05, 0.1, 0.2),
+                labels = c("0", "0.01", "0.02", "0.05", "0.1", "0.2")) +
+  scale_y_log10() +
+  facet_grid(K_label ~ sparse_label) +
+  labs(
+    title    = "Average run length vs. change magnitude",
+    subtitle = expression(
+      "Solid = AR(0), dashed = AR(1);  independent streams, " *
+      nu * " = 1000, " * alpha * " = 10"^{-4} *
+      ";  dotted = null ARL = 1/" * alpha),
+    x = expression(delta ~ "(shift magnitude)"),
+    y = "ARL (log scale)"
+  ) +
+  theme_talk +
+  theme(legend.position = "bottom",
+        strip.text = element_text(face = "bold"))
+
+ggsave(file.path(sim_dir_arl, "joint_arl_by_ar.png"),
+       pARL, width = 9, height = 7, dpi = 220)
+
+message("Wrote figures/simulations/arl/joint_arl_by_ar.png")
+} # end ARL block
+
+# ======================================================================
+# 11. Bounded AGRAPA simulation results
+#     Reads simulations/output/bounded_sim_results.csv  (Section A)
+#           simulations/output/bounded_w_results.csv    (Section B)
+#     Saves to figures/simulations/
+# ======================================================================
+bounded_csv <- file.path(PKG_DIR, "simulations", "output", "bounded_sim_results.csv")
+w_csv       <- file.path(PKG_DIR, "simulations", "output", "bounded_w_results.csv")
+
+if (!file.exists(bounded_csv)) {
+  message("bounded_sim_results.csv not found — skipping section 11.")
+} else {
+
+bounded <- read.csv(bounded_csv, stringsAsFactors = FALSE)
+
+strat_levels <- c("Full AGRAPA", "Window AGRAPA (W=30)", "EWMA (rho=0.10)",
+                   "Per-clock W=30", "Oracle Kelly")
+strat_labels <- c("Full AGRAPA", "Window AGRAPA (W=30)", "EWMA (rho=0.10)",
+                   "Per-clock (W=30)", "Oracle Kelly")
+strat_pal    <- c(
+  "Full AGRAPA"           = "#1f77b4",
+  "Window AGRAPA (W=30)"  = "#ff7f0e",
+  "EWMA (rho=0.10)"       = "#2ca02c",
+  "Per-clock W=30"        = "#d62728",
+  "Oracle Kelly"          = "#9467bd"
+)
+strat_shapes <- c(
+  "Full AGRAPA"           = 16,
+  "Window AGRAPA (W=30)"  = 17,
+  "EWMA (rho=0.10)"       = 15,
+  "Per-clock W=30"        = 18,
+  "Oracle Kelly"          = 8
+)
+
+bounded$strategy <- factor(bounded$strategy, levels = strat_levels,
+                            labels = strat_labels)
+
+# relabel after factor creation
+names(strat_pal)    <- strat_labels
+names(strat_shapes) <- strat_labels
+
+# ── Panel A: CAD vs delta ────────────────────────────────────────────────
+pB_cad <- ggplot(bounded, aes(delta, CAD, colour = strategy, shape = strategy)) +
+  geom_line(linewidth = 0.8, na.rm = TRUE) +
+  geom_point(size = 2.2, na.rm = TRUE) +
+  scale_colour_manual(values = strat_pal,    name = NULL) +
+  scale_shape_manual( values = strat_shapes, name = NULL) +
+  labs(
+    title    = "Conditional average delay — bounded [0,1] change detection",
+    subtitle = expression(
+      "Pre: Uniform(0,1); Post: Beta(4(0.5 + "*delta*"), 4(0.5 - "*delta*"))"~
+      "  "*alpha*" = 0.001, "*nu*" = 50, N = 500"),
+    x = expression(delta ~ "(mean shift)"),
+    y = "CAD"
+  ) +
+  theme_talk
+
+# ── Panel B: computation time vs delta ───────────────────────────────────
+pB_time <- ggplot(bounded, aes(delta, comp_time_ms,
+                                colour = strategy, shape = strategy)) +
+  geom_line(linewidth = 0.8, na.rm = TRUE) +
+  geom_point(size = 2.2, na.rm = TRUE) +
+  scale_colour_manual(values = strat_pal,    name = NULL) +
+  scale_shape_manual( values = strat_shapes, name = NULL) +
+  labs(
+    title = "Computation time per replication",
+    x     = expression(delta ~ "(mean shift)"),
+    y     = "ms / replication"
+  ) +
+  theme_talk
+
+ggsave(file.path(sim_dir_cad, "bounded_cad.png"),
+       pB_cad,  width = 8.5, height = 4.5, dpi = 220)
+ggsave(file.path(sim_dir_cad, "bounded_comp_time.png"),
+       pB_time, width = 8.5, height = 4.5, dpi = 220)
+
+message("Wrote bounded strategy comparison figures (11a, 11b).")
+} # end bounded_csv block
+
+# ── Section B: W-sensitivity ──────────────────────────────────────────────
+if (!file.exists(w_csv)) {
+  message("bounded_w_results.csv not found — skipping section 11b.")
+} else {
+
+w_res <- read.csv(w_csv, stringsAsFactors = FALSE)
+w_res$W             <- factor(w_res$W, levels = c(1, 5, 30, 100))
+w_res$strategy_type <- factor(w_res$strategy_type,
+                               levels = c("Window", "Per-clock"),
+                               labels = c("Window AGRAPA", "Per-clock"))
+
+w_pal    <- c("1" = "#1f77b4", "5" = "#ff7f0e", "30" = "#2ca02c", "100" = "#d62728")
+w_shapes <- c("1" = 16,        "5" = 17,         "30" = 15,        "100" = 18)
+
+pW_cad <- ggplot(w_res, aes(delta, CAD, colour = W, shape = W, group = W)) +
+  geom_line(linewidth = 0.8, na.rm = TRUE) +
+  geom_point(size = 2.0, na.rm = TRUE) +
+  scale_colour_manual(values = w_pal,    name = "Window (W)") +
+  scale_shape_manual( values = w_shapes, name = "Window (W)") +
+  facet_wrap(~ strategy_type) +
+  labs(
+    title    = "CAD vs. delta by window size",
+    subtitle = expression(
+      "Pre: Uniform(0,1); Post: Beta(4(0.5 + "*delta*"), 4(0.5 - "*delta*"))"~
+      "  "*alpha*" = 0.001"),
+    x = expression(delta ~ "(mean shift)"),
+    y = "CAD"
+  ) +
+  theme_talk +
+  theme(strip.text = element_text(face = "bold"))
+
+pW_time <- ggplot(w_res, aes(delta, comp_time_ms, colour = W, shape = W, group = W)) +
+  geom_line(linewidth = 0.8, na.rm = TRUE) +
+  geom_point(size = 2.0, na.rm = TRUE) +
+  scale_colour_manual(values = w_pal,    name = "Window (W)") +
+  scale_shape_manual( values = w_shapes, name = "Window (W)") +
+  facet_wrap(~ strategy_type) +
+  labs(
+    title = "Computation time vs. delta by window size",
+    x     = expression(delta ~ "(mean shift)"),
+    y     = "ms / replication"
+  ) +
+  theme_talk +
+  theme(strip.text = element_text(face = "bold"))
+
+ggsave(file.path(sim_dir_cad, "bounded_w_cad.png"),
+       pW_cad,  width = 9, height = 4.5, dpi = 220)
+ggsave(file.path(sim_dir_cad, "bounded_w_comp_time.png"),
+       pW_time, width = 9, height = 4.5, dpi = 220)
+
+message("Wrote W-sensitivity figures (11c, 11d).")
+} # end w_csv block
+
+# ── Section 11C: change-point location sensitivity ────────────────────────
+nu_csv <- file.path(PKG_DIR, "simulations", "output", "bounded_nu_results.csv")
+if (!file.exists(nu_csv)) {
+  message("bounded_nu_results.csv not found — skipping section 11c.")
+} else {
+
+nu_res <- read.csv(nu_csv, stringsAsFactors = FALSE)
+
+strat_levels_c <- c("Full AGRAPA", "Window AGRAPA (W=30)", "EWMA (rho=0.10)",
+                    "Per-clock W=30", "Oracle Kelly")
+strat_labels_c <- c("Full AGRAPA", "Window AGRAPA (W=30)", "EWMA (rho=0.10)",
+                    "Per-clock (W=30)", "Oracle Kelly")
+strat_pal_c    <- setNames(
+  c("#1f77b4", "#ff7f0e", "#2ca02c", "#d62728", "#9467bd"), strat_labels_c)
+strat_shapes_c <- setNames(c(16, 17, 15, 18, 8), strat_labels_c)
+
+nu_res$strategy <- factor(nu_res$strategy,
+                           levels = strat_levels_c, labels = strat_labels_c)
+nu_res$nu_label <- factor(paste0("nu == ", nu_res$nu),
+                           levels = paste0("nu == ", c(10, 50, 200)))
+
+pC_cad <- ggplot(nu_res, aes(delta, CAD, colour = strategy, shape = strategy)) +
+  geom_line(linewidth = 0.8, na.rm = TRUE) +
+  geom_point(size = 2.2, na.rm = TRUE) +
+  scale_colour_manual(values = strat_pal_c,    name = NULL) +
+  scale_shape_manual( values = strat_shapes_c, name = NULL) +
+  facet_wrap(~ nu_label, labeller = label_parsed) +
+  labs(
+    title    = "Effect of change-point location on detection delay",
+    subtitle = expression(
+      "Full AGRAPA burns in pre-change bet as "*nu*" grows; windowed strategies adapt faster"),
+    x = expression(delta ~ "(mean shift)"),
+    y = "CAD"
+  ) +
+  theme_talk +
+  theme(strip.text = element_text(face = "bold"))
+
+ggsave(file.path(sim_dir_cad, "bounded_nu_cad.png"),
+       pC_cad, width = 10, height = 4.5, dpi = 220)
+
+message("Wrote nu-sensitivity figure (11c).")
+} # end nu_csv block

@@ -100,9 +100,12 @@ N_REP <- if (RUN_FULL) 300L  else 100L
 
   # BoundedModel TSM increments: one column per stream
   inc_mat <- matrix(NA_real_, nrow = N, ncol = K)
-  for (k in seq_len(K))
-    inc_mat[, k] <- compute_increments(TSM(BoundedModel(eta = eta_vec[k])),
-                                       x[, k], log = TRUE)
+  for (k in seq_len(K)) {
+    bm_k         <- BoundedModel(eta = eta_vec[k],
+                                  bets = EWMABet(rho = 0.1,
+                                                 mu_init = eta_vec[k]))
+    inc_mat[, k] <- compute_increments(TSM(bm_k), x[, k], log = TRUE)
+  }
 
   # K independent S-R detectors at Bonferroni-corrected level alpha/K,
   # each resetting after alarms so post-change detection is not blocked.
@@ -149,9 +152,7 @@ N_REP <- if (RUN_FULL) 300L  else 100L
 stream_arl_names <- paste0("stream_", seq_len(K_MAX), "_ARL")
 stream_cad_names <- paste0("stream_", seq_len(K_MAX), "_CAD")
 
-results <- vector("list", nrow(param_grid))
-
-for (i in seq_len(nrow(param_grid))) {
+.run_condition <- function(i) {
   row <- param_grid[i, ]
   K   <- as.integer(row$K)
   p   <- as.integer(row$p)
@@ -234,12 +235,13 @@ for (i in seq_len(nrow(param_grid))) {
   )
   cond_row <- cbind(cond_row, as.data.frame(t(s_arl)), as.data.frame(t(s_cad)))
 
-  results[[i]] <- cond_row
-
-  if (i %% 5L == 0L)
-    message(sprintf("[%d / %d] p=%d  K=%d  nu=%d  delta=%.3f",
-                    i, nrow(param_grid), p, K, nu, row$delta_norm))
+  message(sprintf("[%d / %d] p=%d  K=%d  nu=%d  delta=%.3f",
+                  i, nrow(param_grid), p, K, nu, row$delta_norm))
+  cond_row
 }
+
+results <- parallel::mclapply(seq_len(nrow(param_grid)),
+                              .run_condition, mc.cores = 8L)
 
 results <- do.call(rbind, results)
 rownames(results) <- NULL
