@@ -14,6 +14,7 @@ suppressPackageStartupMessages({
   library(dplyr)
   library(tidyr)
   library(readr)
+  library(patchwork)
 })
 
 # ----------------------------------------------------------------------
@@ -348,6 +349,105 @@ p2 <- ggplot(sp$df, aes(t, logR)) +
        x = "t", y = expression(log~R[t])) +
   theme_talk
 ggsave("figures/sr_procedure.png", p2, width = 9, height = 4.2, dpi = 220)
+
+# ======================================================================
+# 2b. S-R procedure illustration — three stacked panels
+#     Panel 1: log TSM path (decreases pre-change, recovers post-change)
+#     Panel 2: log increments (bars, coloured by sign)
+#     Panel 3: log S-R statistic with threshold and alarm marker
+# ======================================================================
+set.seed(7)
+N_ill   <- 200L
+nu_ill  <- 100L
+delta_ill <- 0.45
+alpha_ill <- 0.001
+
+model_ill <- GaussianModel(mean_pre = 0, sd_pre = 1,
+                           mean_post = delta_ill, sd_post = 1)
+x_ill  <- c(rnorm(nu_ill, 0, 1),
+            rnorm(N_ill - nu_ill, delta_ill, 1))
+inc_ill <- compute_increments(TSM(model_ill), x_ill, log = TRUE)
+logM_ill <- increments_to_tsm(inc_ill, log = TRUE)
+
+sr_ill   <- ShiryaevRobertsDetector(alpha = alpha_ill, criterion = "ARL")
+sr_out   <- run_detector(sr_ill, inc_ill, log = TRUE)
+log_sr   <- sr_out$statistic
+alarm_t  <- sr_out$stopping_time   # finite for this seed
+log_thr  <- log(1 / alpha_ill)     # log(1000) ≈ 6.9
+
+t_seq  <- seq_len(N_ill)
+period <- factor(ifelse(t_seq <= nu_ill, "pre-change", "post-change"),
+                 levels = c("pre-change", "post-change"))
+pre_post_pal <- c("pre-change" = "#457b9d", "post-change" = "#e63946")
+
+# -- Panel 1: log TSM -------------------------------------------------
+p_tsm_ill <- ggplot(data.frame(t = t_seq, logM = logM_ill, period = period),
+                    aes(t, logM, colour = period)) +
+  geom_line(linewidth = 0.7) +
+  geom_vline(xintercept = nu_ill, linetype = "dashed",
+             colour = "grey30", linewidth = 0.7) +
+  annotate("text", x = nu_ill + 2, y = max(logM_ill) * 0.88,
+           label = "nu", parse = TRUE, hjust = 0,
+           colour = "grey20", size = 4.5) +
+  scale_colour_manual(values = pre_post_pal, name = NULL) +
+  labs(x = NULL, y = expression(log~M[t]),
+       title = "Log test supermartingale  (martingale under H₀, grows under H₁)") +
+  theme_talk +
+  theme(legend.position = "top", axis.text.x = element_blank(),
+        axis.ticks.x = element_blank())
+
+# -- Panel 2: log increments ------------------------------------------
+df_inc_ill <- data.frame(t = t_seq, inc = inc_ill,
+                         sign = factor(ifelse(inc_ill >= 0,
+                                              "positive", "negative")))
+p_inc_ill <- ggplot(df_inc_ill, aes(t, inc, fill = sign)) +
+  geom_col(width = 1, alpha = 0.8) +
+  geom_hline(yintercept = 0, colour = "grey20", linewidth = 0.35) +
+  geom_vline(xintercept = nu_ill, linetype = "dashed",
+             colour = "grey30", linewidth = 0.7) +
+  scale_fill_manual(
+    values  = c("positive" = "#2ca02c", "negative" = "#d62728"),
+    guide   = "none") +
+  labs(x = NULL, y = expression(log~m[t]),
+       title = "Log likelihood increments  (green = positive, red = negative)") +
+  theme_talk +
+  theme(axis.text.x = element_blank(), axis.ticks.x = element_blank())
+
+# -- Panel 3: log S-R statistic ---------------------------------------
+y_top_sr <- max(max(log_sr, na.rm = TRUE), log_thr) * 1.15
+p_sr_ill <- ggplot(data.frame(t = t_seq, logR = log_sr), aes(t, logR)) +
+  geom_line(colour = "#1f77b4", linewidth = 0.75) +
+  geom_hline(yintercept = log_thr, linetype = "dotted",
+             colour = "grey20", linewidth = 0.75) +
+  geom_vline(xintercept = nu_ill, linetype = "dashed",
+             colour = "grey30", linewidth = 0.7) +
+  geom_vline(xintercept = alarm_t, colour = "#2a9d8f", linewidth = 1.1) +
+  annotate("text", x = nu_ill + 2, y = y_top_sr * 0.92,
+           label = "nu", parse = TRUE, hjust = 0,
+           colour = "grey20", size = 4.5) +
+  annotate("text", x = alarm_t + 2, y = y_top_sr * 0.92,
+           label = sprintf("alarm\n(t = %d)", alarm_t),
+           hjust = 0, size = 3.6, colour = "#2a9d8f") +
+  annotate("text", x = 2, y = log_thr * 1.1,
+           label = "threshold = log(1/alpha)",
+           hjust = 0, size = 3.2, colour = "grey20") +
+  coord_cartesian(ylim = c(NA, y_top_sr)) +
+  labs(x = "time  t", y = expression(log~R[t]),
+       title = sprintf(
+         "Log Shiryaev–Roberts statistic  (alarm at t = %d)", alarm_t)) +
+  theme_talk
+
+# -- Combine with patchwork ------------------------------------------
+p_sr_combined <- p_tsm_ill / p_inc_ill / p_sr_ill +
+  plot_annotation(
+    title    = "The Shiryaev–Roberts sequential detection procedure",
+    subtitle = sprintf(
+      "Gaussian model: delta = %.2f,  nu = %d,  alpha = %.3f (ARL threshold = %g)",
+      delta_ill, nu_ill, alpha_ill, round(1 / alpha_ill))
+  )
+
+ggsave("figures/sr_procedure_illustration.png",
+       p_sr_combined, width = 9, height = 10, dpi = 220)
 
 # ======================================================================
 # 3. Spending schedules: shapes + the corresponding PFA-controlled detectors
@@ -1037,6 +1137,77 @@ ggsave(file.path(sim_dir_cad, "localized_stream_cad_sparse.png"),
 
 message("Wrote figures/simulations/cad/  (", 6L, " joint+localized CAD figures)")
 } # end if (file.exists(...))
+
+# ======================================================================
+# 10b. ARL vs delta under different AR(p) settings
+#      Shows false-alarm control (delta = 0) and how ARL drops as the
+#      signal grows, for AR(0) vs AR(1) and each detector variant.
+#      Reads simulations/output/joint_sim_results.csv
+#      Saves to figures/simulations/arl/
+# ======================================================================
+if (!file.exists(joint_csv)) {
+  message("joint_sim_results.csv not found — skipping ARL figure.")
+} else {
+
+# Include delta = 0 so the null ARL (≈ 1/alpha) is visible
+joint_arl <- read.csv(joint_csv, stringsAsFactors = FALSE) %>%
+  mutate(
+    detector_label = case_when(
+      detector == "oracle"  ~ "oracle",
+      detector == "misspec" ~ "misspecified",
+      detector == "bounded" & combine == "average" ~ "bounded: average",
+      detector == "bounded" & combine == "product" ~ "bounded: product"
+    ),
+    detector_label = factor(detector_label, levels = names(det_pal)),
+    K_label      = factor(paste0("K = ", K),
+                          levels = c("K = 2", "K = 10")),
+    sparse_label = factor(ifelse(sparse, "sparse change", "dense change"),
+                          levels = c("sparse change", "dense change")),
+    p_label      = factor(paste0("AR(", p, ")"),
+                          levels = c("AR(0)", "AR(1)"))
+  ) %>%
+  filter(independent == TRUE, nu == 1000)
+
+# Reference line: nominal 1/alpha ARL under H0
+arl_nominal <- unique(joint_arl$alpha)
+arl_ref     <- 1 / arl_nominal   # = 10 000
+
+pARL <- ggplot(joint_arl,
+               aes(delta, ARL, colour = detector_label,
+                   shape = detector_label, linetype = p_label)) +
+  geom_hline(yintercept = arl_ref, linetype = "dotted",
+             colour = "grey40", linewidth = 0.6) +
+  annotate("text", x = min(joint_arl$delta[joint_arl$delta > 0]),
+           y = arl_ref * 1.15, label = "1/alpha",
+           parse = TRUE, hjust = 0, size = 3.2, colour = "grey40") +
+  geom_line(linewidth = 0.75, na.rm = TRUE) +
+  geom_point(size = 1.8, na.rm = TRUE) +
+  scale_colour_manual(values = det_pal,    name = NULL) +
+  scale_shape_manual( values = det_shapes, name = NULL) +
+  scale_linetype_manual(values = c("AR(0)" = "solid", "AR(1)" = "dashed"),
+                        name = "AR order") +
+  scale_x_log10(breaks = c(0, 0.01, 0.02, 0.05, 0.1, 0.2),
+                labels = c("0", "0.01", "0.02", "0.05", "0.1", "0.2")) +
+  scale_y_log10() +
+  facet_grid(K_label ~ sparse_label) +
+  labs(
+    title    = "Average run length vs. change magnitude",
+    subtitle = expression(
+      "Solid = AR(0), dashed = AR(1);  independent streams, " *
+      nu * " = 1000, " * alpha * " = 10"^{-4} *
+      ";  dotted = null ARL = 1/" * alpha),
+    x = expression(delta ~ "(shift magnitude)"),
+    y = "ARL (log scale)"
+  ) +
+  theme_talk +
+  theme(legend.position = "bottom",
+        strip.text = element_text(face = "bold"))
+
+ggsave(file.path(sim_dir_arl, "joint_arl_by_ar.png"),
+       pARL, width = 9, height = 7, dpi = 220)
+
+message("Wrote figures/simulations/arl/joint_arl_by_ar.png")
+} # end ARL block
 
 # ======================================================================
 # 11. Bounded AGRAPA simulation results

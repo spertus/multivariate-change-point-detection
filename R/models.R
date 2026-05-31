@@ -37,11 +37,12 @@ setClass("BernoulliModel", contains = "UnivariateModel",
 
 # Class: BoundedModel
 # purpose: test martingale model for [0,1]-bounded univariate observations.
-#          The one-sided null is E[X_t] <= eta; alternative is E[X_t] > eta.
-#          Increment at time t: 1 + lambda_t * (X_t - eta), where lambda_t is
+#          The one-sided null is E[X_t] <= eta_t; alternative is E[X_t] > eta_t.
+#          Increment at time t: 1 + lambda_t * (X_t - eta_t), where lambda_t is
 #          determined by the supplied BettingStrategy (default: AGRAPABet).
 # slots:
-#   eta  = null mean upper bound in (0, 1)
+#   eta  = null mean upper bound: scalar in (0,1) (IID null, length-1) or
+#          a pre-computed length-N vector (time-varying null, e.g. from ARBoundedModel)
 #   bets = BettingStrategy object that maps history -> lambda_t
 setClass(
   "BoundedModel",
@@ -252,17 +253,21 @@ BernoulliModel <- function(p_pre, p_post, name = "bernoulli") {
 # Constructor: BoundedModel
 # purpose: builds a [0,1]-bounded test martingale model with a pluggable betting strategy
 # inputs:
-#   eta  = numeric scalar null mean upper bound in (0, 1)
+#   eta  = null mean upper bound: a scalar in (0, 1) for IID pre-change models,
+#          or a length-N numeric vector of time-varying conditional null means
+#          (all values must lie in (0, 1)).  Scalars are backward-compatible.
+#          Use ARBoundedModel() to construct the eta vector for AR(p) pre-change data.
 #   bets = BettingStrategy object (default: AGRAPABet())
 #   name = character model label
 # outputs:
 #   BoundedModel object
 BoundedModel <- function(eta, bets = AGRAPABet(), name = "bounded") {
-  if (length(eta) != 1L || !is.finite(eta) || eta <= 0 || eta >= 1)
-    stop("`eta` must be a scalar in (0, 1).", call. = FALSE)
+  eta <- as.numeric(eta)
+  if (length(eta) == 0L || !all(is.finite(eta)) || any(eta <= 0) || any(eta >= 1))
+    stop("`eta` must be a scalar or vector with all values in (0, 1).", call. = FALSE)
   if (!is(bets, "BettingStrategy"))
     stop("`bets` must be a BettingStrategy object.", call. = FALSE)
-  new("BoundedModel", name = name, eta = as.numeric(eta), bets = bets)
+  new("BoundedModel", name = name, eta = eta, bets = bets)
 }
 
 # ---- model_density methods ----
@@ -358,7 +363,72 @@ setMethod("likelihood_increment", "Model", function(object, x, history = NULL, l
 #   numeric scalar increment (or log-increment)
 setMethod("likelihood_increment", "BoundedModel", function(object, x, history = NULL, log = FALSE) {
   if (is.na(x)) return(if (log) 0 else 1)
-  lam <- compute_bet(object@bets, history, object@eta)
-  inc <- max(1 + lam * (as.numeric(x) - object@eta), .Machine$double.eps)
+  # For a time-varying eta vector, infer the current time from history length.
+  eta <- if (length(object@eta) == 1L) object@eta
+         else object@eta[length(history) + 1L]
+  lam <- compute_bet(object@bets, history, eta)
+  inc <- max(1 + lam * (as.numeric(x) - eta), .Machine$double.eps)
   if (log) base::log(inc) else inc
 })
+
+# Constructor: ARBoundedModel
+# purpose: builds a BoundedModel with a time-varying null mean eta_t equal to
+#          the AR(p) conditional pre-change mean E[X_t | X_{t-1},...,X_{t-p}].
+#          This makes the resulting BoundedModel TSM valid under AR(p) pre-change
+#          data: under H0, E[m_t | F_{t-1}] = 1 exactly (true martingale), while
+#          under H1 the increment has positive expected value, enabling detection.
+#
+#          The function computes eta_t from the observed stream x and the AR
+#          parameters (phi, mu), then calls BoundedModel(eta = eta_t, bets).
+#          Pass the same x to both ARBoundedModel() and compute_increments().
+#
+# inputs:
+#   phi  = numeric vector of AR coefficients (phi_1, ..., phi_p); p = length(phi)
+#   mu   = numeric scalar unconditional pre-change mean in (0, 1)
+#   x    = numeric vector of observed data (pre- and post-change); length N
+#   bets = BettingStrategy (default: EWMABet with mu_init = mu)
+#   name = character model label
+# outputs:
+#   BoundedModel with eta slot set to the length-N vector of conditional null means
+ARBoundedModel <- function(phi, mu, x,
+                           bets = EWMABet(rho = 0.1, mu_init = mu),
+                           name = "AR-bounded") {
+  phi <- as.numeric(phi)
+  mu  <- as.numeric(mu)
+  x   <- as.numeric(x)
+  if (!all(is.finite(phi)))
+    stop("`phi` must be a finite numeric vector.", call. = FALSE)
+  if (length(mu) != 1L || !is.finite(mu) || mu <= 0 || mu >= 1)
+    stop("`mu` must be a finite scalar in (0, 1).", call. = FALSE)
+  if (length(x) == 0L)
+    stop("`x` must be a non-empty numeric vector.", call. = FALSE)
+
+  n <- length(x)
+  p <- length(phi)
+
+  # eta_t = mu + sum_{j=1}^{min(p, t-1)} phi_j * (x[t-j] - mu)
+  # At t <= p, only the available lags are used; at t = 1, eta_1 = mu.
+  eta_t <- numeric(n)
+  for (t in seq_len(n)) {
+    avail    <- min(p, t - 1L)
+    eta_t[t] <- mu + if (avail == 0L) 0
+                     else sum(phi[seq_len(avail)] *
+                              (x[seq.int(t - 1L, t - avail)] - mu))
+  }
+
+  # Check that all conditional null means are in (0, 1), as required by
+  # BoundedModel.  Values outside this range indicate a mis-specified AR model
+  # (e.g., non-stationary phi, or extreme observations outside [0, 1]).
+  if (any(!is.finite(eta_t)))
+    stop("computed eta_t contains non-finite values; check phi and x.",
+         call. = FALSE)
+  if (any(eta_t <= 0) || any(eta_t >= 1))
+    stop(
+      "computed eta_t values must lie in (0, 1).  ",
+      sprintf("%d value(s) outside range (min=%.4g, max=%.4g).  ",
+              sum(eta_t <= 0 | eta_t >= 1), min(eta_t), max(eta_t)),
+      "Ensure the AR model is stationary and all observations are in (0, 1).",
+      call. = FALSE)
+
+  BoundedModel(eta = eta_t, bets = bets, name = name)
+}

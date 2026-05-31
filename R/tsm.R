@@ -102,24 +102,26 @@ ConformalTSM <- function(...) stop("ConformalTSM is not yet implemented.", call.
 #   v_t  = (1-rho)*v_{t-1}  + rho*(X_{t-1} - mu_{t-1})^2
 # NA observations are skipped: EWMA state is not updated on NA.
 .ewma_increments_fast <- function(model, x, log) {
-  bets <- model@bets   # EWMABet
-  x    <- as.numeric(x)
+  bets   <- model@bets   # EWMABet
+  x      <- as.numeric(x)
   .assert_numeric_vector(x, "x")
-  n   <- length(x)
-  eta <- model@eta
-  rho <- bets@rho
-  mu  <- bets@mu_init
-  v   <- bets@v_init
+  n      <- length(x)
+  eta    <- model@eta          # scalar or length-n vector
+  is_vec <- length(eta) > 1L
+  rho    <- bets@rho
+  mu     <- bets@mu_init
+  v      <- bets@v_init
 
   inc <- numeric(n)
   for (t in seq_len(n)) {
-    xt <- x[t]
+    xt    <- x[t]
+    eta_t <- if (is_vec) eta[t] else eta
     # Bet using current predictable (lagged) EWMA estimates
-    d      <- mu - eta
+    d      <- mu - eta_t
     sd_hat <- max(sqrt(v), bets@sd_min)
-    lam    <- max(0, min(d / (sd_hat^2 + d^2), bets@c / (eta + bets@eps)))
+    lam    <- max(0, min(d / (sd_hat^2 + d^2), bets@c / (eta_t + bets@eps)))
     if (!is.na(xt)) {
-      inc[t] <- max(1 + lam * (xt - eta), .Machine$double.eps)
+      inc[t] <- max(1 + lam * (xt - eta_t), .Machine$double.eps)
       # Update EWMA state: new estimate incorporates X_t for the NEXT step
       v  <- (1 - rho) * v  + rho * (xt - mu)^2
       mu <- (1 - rho) * mu + rho * xt
@@ -191,15 +193,18 @@ setMethod("compute_increments", "TSM", function(object, x, log = FALSE) {
   # Vectorised fast paths (bypass the generic observation-by-observation loop)
   if (is(model, "GaussianVARModel"))
     return(.gvar_increments_fast(model, x, log))
-  if (is(model, "BoundedModel") && is.null(dim(x)) &&
-        is(model@bets, "AGRAPABet"))
-    return(.bounded_increments_fast(model, x, log))
-  if (is(model, "BoundedModel") && is.null(dim(x)) &&
-        is(model@bets, "EWMABet"))
-    return(.ewma_increments_fast(model, x, log))
-  if (is(model, "BoundedModel") && is.null(dim(x)) &&
-        is(model@bets, "FixedBet"))
-    return(.fixedbet_increments_fast(model, x, log))
+  if (is(model, "BoundedModel") && is.null(dim(x))) {
+    # Vector eta: validate length matches x before dispatching.
+    if (length(model@eta) > 1L && length(model@eta) != length(x))
+      stop("length(eta) must equal length(x) when eta is a vector.",
+           call. = FALSE)
+    if (is(model@bets, "AGRAPABet"))
+      return(.bounded_increments_fast(model, x, log))
+    if (is(model@bets, "EWMABet"))
+      return(.ewma_increments_fast(model, x, log))
+    if (is(model@bets, "FixedBet"))
+      return(.fixedbet_increments_fast(model, x, log))
+  }
 
   # Generic loop — used for BernoulliModel, BoundedModel with non-AGRAPA bets,
   # and any future Model subclasses.
