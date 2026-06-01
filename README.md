@@ -1,61 +1,67 @@
 # multichangepoints
 
-`multichangepoints` is an R package scaffold for multivariate sequential change-point detection via test supermartingales. It is modularized into: 
+An R package for sequential multivariate change-point detection via test supermartingales (TSMs).  Accompanies Spertus et al. (2026).
 
-- model classes (`GaussianVARModel` / convenience wrappers `GaussianModel`, `MultivariateGaussianModel`; `BernoulliModel`; `BoundedModel`)
-- test supermartingales (`TSM`)
-- detectors (`ShiryaevRobertsDetector`, `CUSUMDetector`, `LocalizedDetector`)
-- multistream combiners (`AverageCombiner`, `ProductCombiner`, `UniversalPortfolioCombiner`)
-- simulation helpers (`DGP`, `run_simulation`)
+## Classes
+
+| Layer | Classes |
+|---|---|
+| **Models** | `GaussianVARModel` (+ wrappers `GaussianModel`, `MultivariateGaussianModel`); `BernoulliModel`; `BoundedModel` (scalar or vector `eta`); `ARBoundedModel` factory for AR(*p*) pre-change data |
+| **Betting strategies** | `AGRAPABet`, `EWMABet`, `FixedBet` |
+| **TSM** | `TSM` (alias `SimpleVsSimpleTSM`) |
+| **Detectors** | `ShiryaevRobertsDetector` (ARL and PFA criteria), `CUSUMDetector`, `LocalizedDetector` |
+| **Combiners** | `AverageCombiner`, `ProductCombiner`, `UniversalPortfolioCombiner` |
+| **Simulation** | `DGP`, `run_simulation`, `generate_stream` |
 
 ## Quick start
 
 ```r
 library(multichangepoints)
-set.seed(20260305)
+set.seed(1)
 
+# IID Gaussian change
 model <- GaussianModel(mean_pre = 0, sd_pre = 1, mean_post = 1, sd_post = 1)
-tsm <- TSM(model)
+x     <- c(rnorm(100, 0, 1), rnorm(100, 1, 1))
+inc   <- compute_increments(TSM(model), x, log = TRUE)
 
-dgp <- DGP(
-  generator = default_gaussian_dgp,
-  pre_params = list(mean = 0, sd = 1),
-  post_params = list(mean = 1, sd = 1),
-  nu = 120,
-  name = "iid-gaussian-change"
-)
-
-x <- generate_stream(dgp, N = 250, K = 1)
-inc <- compute_increments(tsm, x)
-
-det <- ShiryaevRobertsDetector(alpha = 0.05, criterion = "ARL")
-out <- run_detector(det, inc)
-out$stopping_time
+det <- ShiryaevRobertsDetector(alpha = 0.01, criterion = "ARL")
+run_detector(det, inc, log = TRUE)$stopping_time
 ```
 
-## Workflow vignette
-
 ```r
-vignette("workflow", package = "multichangepoints")
+# [0,1]-bounded data with AR(1) pre-change structure
+phi <- 0.4;  mu <- 0.3;  sigma <- 0.06;  N <- 500
+x   <- numeric(N);  x[1] <- rnorm(1, mu, sigma / sqrt(1 - phi^2))
+for (t in 2:N) x[t] <- mu + phi * (x[t-1] - mu) + rnorm(1, 0, sigma)
+
+# ARBoundedModel corrects the conditional null mean for each time step,
+# making the TSM a valid martingale under the AR(1) pre-change model.
+bm  <- ARBoundedModel(phi = phi, mu = mu, x = x,
+                      bets = EWMABet(rho = 0.1, mu_init = mu))
+inc <- compute_increments(TSM(bm), x, log = TRUE)
+run_detector(ShiryaevRobertsDetector(alpha = 0.05), inc, log = TRUE)$stopping_time
 ```
 
-If the package is not installed yet, render the source vignette directly:
+## Validity notes
+
+- **`BoundedModel` with scalar `eta`** is theoretically valid only for IID pre-change data.  Using a fixed `eta` on AR(*p*) data (φ > 0) produces a submartingale under H₀, inflating false alarm rates.
+- **`ARBoundedModel(phi, mu, x, bets)`** computes the time-varying conditional null mean η_t = E[X_t | X_{t-1},…,X_{t-p}] and passes it as a vector to `BoundedModel`, restoring validity.
+
+## Wastewater vignette
 
 ```r
-rmarkdown::render("vignettes/workflow.Rmd")
+vignette("wastewater", package = "multichangepoints")
+# or, from source:
+rmarkdown::render("vignettes/wastewater.Rmd")
 ```
 
 ## Testing
 
-Quick unit tests (default; skips integration tests):
-
 ```r
-testthat::test_local()
-```
+# Unit tests (fast, ~5 s):
+devtools::test()
 
-Full suite including integration/calibration tests:
-
-```r
+# Include integration/calibration tests:
 Sys.setenv(RUN_INTEGRATION_TESTS = "true")
-testthat::test_local()
+devtools::test()
 ```
