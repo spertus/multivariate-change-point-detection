@@ -13,6 +13,17 @@ An R package for sequential multivariate change-point detection via test superma
 | **Combiners** | `AverageCombiner`, `ProductCombiner`, `UniversalPortfolioCombiner` |
 | **Simulation** | `DGP`, `run_simulation`, `generate_stream` |
 
+## Installation
+
+```r
+# Install from GitHub (requires the remotes package):
+# install.packages("remotes")
+remotes::install_github("spertus/multivariate-change-point-detection")
+
+# Or install from a local clone:
+# devtools::install("path/to/multi-change-points")
+```
+
 ## Quick start
 
 ```r
