@@ -560,16 +560,61 @@ test_mat   <- t(probit_matrix[, test_idx, drop = FALSE])
 test_dates <- spine_pipe[test_idx]
 N_test     <- nrow(test_mat)
 
-# BoundedModel log-increments per stream using EWMA AGRAPA betting (eta = 0.5).
-# EWMABet with rho = 0.1 gives an effective soft window of ~10 weeks, which
-# lets the bet adapt to post-change drift without being anchored to the long
-# pre-change history that windowed AGRAPA (window = Inf) would accumulate.
+# Kelly-optimal fixed bet for a Beta(3,1) post-change distribution with eta = 0.5.
+# Discretise the Beta(3,1) density on a fine grid and pass to
+# compute_kelly_optimal_bet(), which finds lambda* maximising
+# E_{Beta(3,1)}[log(1 + lambda*(X - eta))].
+x_grid           <- seq(0.01, 0.99, length.out = 2000)
+kelly_bet_beta <- compute_kelly_optimal_bet(
+  l_i = x_grid,
+  eta = 0.5,
+  p_i = dbeta(x_grid, 1.5, 1)
+)
+
+# BoundedModel log-increments per stream using the Kelly-optimal fixed bet.
 inc_mat <- matrix(NA_real_, nrow = N_test, ncol = K_sites,
                   dimnames = list(NULL, rownames(probit_matrix)))
 for (k in seq_len(K_sites))
   inc_mat[, k] <- compute_increments(
-    TSM(BoundedModel(eta = 0.5, bets = EWMABet(rho = 0.1))),
+    TSM(BoundedModel(eta = 0.5, bets = FixedBet(kelly_bet_beta))),
     test_mat[, k], log = TRUE)
+```
+
+```{r beta31-kelly-plot}
+# Beta(3,1) density annotated with the Kelly-optimal bet.
+eta_val  <- 0.5
+lam_star <- kelly_bet_beta
+
+df_beta <- data.frame(x = x_grid, density = dbeta(x_grid, 1.5, 1))
+
+fig_dir <- file.path(
+  dirname(dirname(knitr::current_input(dir = TRUE))),
+  "ssc-2026", "figures", "nwmp"
+)
+
+p_beta <- ggplot(df_beta, aes(x = x, y = density)) +
+  geom_area(data = subset(df_beta, x >= eta_val),
+            fill = "#2E86AB", alpha = 0.25) +
+  geom_area(data = subset(df_beta, x < eta_val),
+            fill = "#E84855", alpha = 0.25) +
+  geom_line(linewidth = 0.9, colour = "#1a1a2e") +
+  geom_vline(xintercept = eta_val, linetype = "dashed",
+             colour = "grey40", linewidth = 0.6) +
+  annotate("text", x = eta_val + 0.02, y = 2.8,
+           label = "eta == 0.5", parse = TRUE, hjust = 0, size = 3.5) +
+  annotate("text", x = 0.76, y = 1.0,
+           label = paste0("Kelly-optimal bet\nλ* = ", round(lam_star, 4)),
+           hjust = 0, size = 3.2, colour = "#2E86AB") +
+  scale_x_continuous(breaks = seq(0, 1, 0.25)) +
+  labs(x = "x", y = "Density",
+       title = "Beta(3/2, 1) post-change distribution",
+       subtitle = paste0("Kelly-optimal bet λ* = 1/η = ", round(lam_star, 4), "")) +
+  theme_bw(base_size = 11) +
+  theme(panel.grid.minor = element_blank())
+
+print(p_beta)
+ggsave(file.path(fig_dir, "beta_kelly_bet.png"), p_beta,
+       width = 6, height = 4, dpi = 300)
 ```
 
 ## Raw vs. transformed streams
@@ -795,4 +840,154 @@ ggplot(test_cov, aes(x = weekstart, y = w_avg, colour = site)) +
   theme(strip.background = element_rect(fill = "#D6EAF8"),
         strip.text       = element_text(face = "bold", size = 8),
         panel.grid.minor = element_blank())
+```
+
+---
+
+# Secondary analysis: raw CovN2 with AGRAPA betting
+
+The full pipeline above involves several normalization steps (RSV ratio,
+seasonal adjustment, probit transform) whose purpose is to manufacture a
+stationary, mean-zero null against which the BoundedModel TSM is valid.
+Here we ask what happens if we skip all of that and feed the raw
+log-covN2 signal directly into the same betting machinery.
+
+The pre-change null mean $\eta_k$ for each site is estimated as the
+**90th percentile** of the site's normalized training-period values.
+Setting $\eta$ to a high quantile is deliberately conservative: it
+places the null boundary at a level that the data routinely reached
+before 2025, so the martingale only grows when the signal persistently
+**exceeds** the historical upper tail.  The EWMA-AGRAPA bet adapts its
+aggressiveness based on recent data, with a soft window of roughly 10
+weeks ($\rho = 0.1$).
+
+```{r raw-covN2-prep}
+# Extract raw log10-covN2 for selected sites over the full window,
+# filling the weekly spine and linearly interpolating interior gaps.
+raw_long <- ww %>%
+  filter(measureid == "covN2", site %in% selected_sites,
+         weekstart >= window_start, weekstart <= window_end) %>%
+  select(site, weekstart, w_avg) %>%
+  complete(site, weekstart = spine_pipe) %>%
+  arrange(site, weekstart) %>%
+  group_by(site) %>%
+  mutate(w_avg = impute_row(w_avg)) %>%
+  ungroup()
+
+# Wide matrix: K_sites rows x n_weeks columns
+raw_mat <- raw_long %>%
+  pivot_wider(names_from = weekstart, values_from = w_avg) %>%
+  column_to_rownames("site") %>%
+  as.matrix()
+
+# Normalize each site by its training-period maximum so that training
+# values are in [0, 1]; test values exceeding the max are clamped to 1.
+train_max_raw <- apply(raw_mat[, train_idx, drop = FALSE], 1, max, na.rm = TRUE)
+norm_raw_mat  <- pmin(sweep(raw_mat, 1, train_max_raw, "/"), 1)
+
+# Per-site eta: 90th percentile of normalized training values.
+# Under H0 (pre-change), E[X_t] << 90th pctile for right-skewed CovN2,
+# so the BoundedModel null E[X_t] <= eta is well satisfied.
+eta_raw <- apply(norm_raw_mat[, train_idx, drop = FALSE], 1,
+                 quantile, probs = 0.90, na.rm = TRUE)
+
+cat("Per-site eta (90th pctile of normalized training CovN2):\n")
+print(round(eta_raw, 3))
+```
+
+```{r raw-covN2-detect}
+test_raw_mat <- t(norm_raw_mat[, test_idx, drop = FALSE])   # N_test x K
+N_raw        <- nrow(test_raw_mat)
+
+# BoundedModel log-increments per stream using site-specific eta
+# and EWMA-AGRAPA betting (rho = 0.1 ~ 10-week soft window).
+inc_raw <- matrix(NA_real_, nrow = N_raw, ncol = K_sites,
+                  dimnames = list(NULL, selected_sites))
+for (k in seq_len(K_sites))
+  inc_raw[, k] <- compute_increments(
+    TSM(BoundedModel(eta = eta_raw[k], bets = EWMABet(rho = 0.1))),
+    test_raw_mat[, k], log = TRUE)
+
+# LocalizedDetector with the same alpha and ARL criterion as the main pipeline.
+ld_raw  <- LocalizedDetector(K = K_sites, alpha = alpha_global, criterion = "ARL")
+det_raw <- run_detector(ld_raw, evidence = inc_raw, log = TRUE)
+
+stream_stops_raw <- vapply(det_raw$stream_results, `[[`, numeric(1L), "stopping_time")
+stop_dates_raw   <- ifelse(
+  is.finite(stream_stops_raw),
+  format(test_dates[pmin(as.integer(stream_stops_raw), N_raw)]),
+  "no alarm"
+)
+results_raw_df <- data.frame(site      = selected_sites,
+                             stop_date = stop_dates_raw,
+                             row.names = NULL)
+
+cat("=== Raw CovN2 detection (EWMA-AGRAPA, alpha =", alpha_global,
+    ", threshold =", round(log_thresh, 2), ") ===\n")
+cat("Global alarm:", det_raw$alarm, "\n")
+if (det_raw$alarm)
+  cat("Global stopping time:", format(test_dates[det_raw$stopping_time]), "\n")
+cat("\nPer-stream results:\n")
+print(results_raw_df)
+```
+
+```{r raw-covN2-plot, fig.height=9}
+alarm_raw_df <- results_raw_df %>%
+  filter(stop_date != "no alarm") %>%
+  mutate(alarm_date = as.Date(stop_date))
+
+# Log S-R trajectories
+sr_raw_df <- lapply(seq_len(K_sites), function(k) {
+  data.frame(date   = test_dates,
+             site   = selected_sites[k],
+             log_SR = det_raw$stream_results[[k]]$statistic)
+}) %>% bind_rows()
+
+# Normalized CovN2 in test period (long format), with per-site eta for reference
+eta_df <- data.frame(site = selected_sites, eta = eta_raw)
+
+norm_test_df <- as.data.frame(t(norm_raw_mat[, test_idx, drop = FALSE])) %>%
+  tibble::rownames_to_column("date_chr") %>%
+  tidyr::pivot_longer(-date_chr, names_to = "site", values_to = "value") %>%
+  dplyr::mutate(date = as.Date(date_chr)) %>%
+  left_join(eta_df, by = "site")
+
+# Panel 1: normalized CovN2 with per-site eta and alarm lines
+p_raw2 <- ggplot(norm_test_df, aes(x = date, y = value, colour = site)) +
+  geom_line(linewidth = 0.5, alpha = 0.85, na.rm = TRUE) +
+  geom_hline(data = eta_df, aes(yintercept = eta),
+             linetype = "dotted", colour = "grey30", linewidth = 0.6) +
+  geom_vline(data = alarm_raw_df, aes(xintercept = alarm_date, colour = site),
+             linetype = "dashed", linewidth = 0.75) +
+  facet_wrap(~ site, ncol = 3) +
+  scale_colour_viridis_d(option = "turbo", guide = "none") +
+  scale_x_date(date_breaks = "3 months", date_labels = "%b\n'%y") +
+  labs(x = NULL, y = "Normalized log-covN2",
+       title = "Raw CovN2 (normalized to training max) — 2025–2026 test period",
+       subtitle = "Dotted = per-site eta (90th pctile training); dashed = first S-R alarm") +
+  theme_bw(base_size = 9) +
+  theme(strip.background = element_rect(fill = "#D6EAF8"),
+        strip.text       = element_text(face = "bold", size = 8),
+        panel.grid.minor = element_blank())
+
+# Panel 2: log S-R statistic with threshold
+p_sr2 <- ggplot(sr_raw_df, aes(x = date, y = log_SR, colour = site)) +
+  geom_line(linewidth = 0.5, alpha = 0.85) +
+  geom_hline(yintercept = log_thresh, linetype = "dashed",
+             colour = "black", linewidth = 0.7) +
+  geom_vline(data = alarm_raw_df, aes(xintercept = alarm_date, colour = site),
+             linetype = "dashed", linewidth = 0.75) +
+  facet_wrap(~ site, ncol = 3) +
+  scale_colour_viridis_d(option = "turbo", guide = "none") +
+  scale_x_date(date_breaks = "3 months", date_labels = "%b\n'%y") +
+  labs(x = NULL, y = expression(log~R[t]),
+       title = sprintf("Log S-R statistic — raw CovN2 AGRAPA (alpha = %.4f, threshold = %.1f)",
+                       alpha_global, log_thresh)) +
+  theme_bw(base_size = 9) +
+  theme(strip.background = element_rect(fill = "#FDEBD0"),
+        strip.text       = element_text(face = "bold", size = 8),
+        panel.grid.minor = element_blank())
+
+print(p_raw2)
+print(p_sr2)
 ```
