@@ -6,7 +6,7 @@ An R package for sequential multivariate change-point detection via test superma
 
 | Layer | Classes |
 |---|---|
-| **Models** | `GaussianVARModel` (+ wrappers `GaussianModel`, `MultivariateGaussianModel`); `BernoulliModel`; `BoundedModel` (scalar or vector `eta`); `ARBoundedModel` factory for AR(*p*) pre-change data |
+| **Models** | `GaussianVARModel` (+ wrappers `GaussianModel`, `MultivariateGaussianModel`); `BernoulliModel`; `BoundedModel` (scalar or vector `eta` + wrapper `ARBoundedModel` for bounded AR(*p) data) |
 | **Betting strategies** | `AGRAPABet`, `EWMABet`, `FixedBet` |
 | **TSM** | `TSM` (alias `SimpleVsSimpleTSM`) |
 | **Detectors** | `ShiryaevRobertsDetector` (ARL and PFA criteria), `CUSUMDetector`, `LocalizedDetector` |
