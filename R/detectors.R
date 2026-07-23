@@ -157,40 +157,67 @@ setMethod("update_detector", "CUSUMDetector", function(object, evidence, t, stat
 })
 
 # Class: LocalizedDetector
-# purpose: K independent S-R recursions with a joint spending process (Theorem 3,
+# purpose: K independent S-R recursions with a joint spending process (Theorem 1,
 #          Spertus et al. 2026). Each stream k runs the recursion
 #            R_tk = Lambda_tk * (R_{t-1,k} + invest_tk)
-#          with a shared threshold 1/alpha, where invest_tk is drawn from the N_sched x K
-#          `invest` matrix:
-#            ARL (spending allowance gamma_t): sum_k gamma_tk = 1 at each t;
-#                recycles the last row beyond N_sched.
-#            PFA (joint spending schedule pi_t):  sum_t sum_k pi_tk = 1;
-#                uses zero investment beyond N_sched.
-#          The default is the Bonferroni allocation (Proposition 3): gamma_tk = 1/K for ARL,
-#          pi_tk = pi_t_tilde / K for PFA where pi_tilde is a geometric schedule.
+#          with a shared threshold 1/alpha, where invest_tk is either:
+#            (a) static — drawn from the N_sched x K `invest` matrix:
+#                ARL (spending allowance gamma_t): sum_k gamma_tk = 1 at each t;
+#                    recycles the last row beyond N_sched.
+#                PFA (joint spending schedule pi_t):  sum_t sum_k pi_tk = 1;
+#                    uses zero investment beyond N_sched.
+#                The default is the Bonferroni allocation (Proposition 3):
+#                gamma_tk = 1/K for ARL, pi_tk = pi_tilde_t / K for PFA where
+#                pi_tilde is a geometric schedule.
+#            (b) adaptive (Section 5.3) — when `proximity_graph` is set, invest_tk is
+#                recomputed every step from the graph-structured allowance gamma_tk =
+#                (1-zeta)/K + zeta * u_tk / sum(u_t), u_tk = kernel(d_G(k, A_{t-1})),
+#                A_{t-1} = streams with R_{(t-1),k} > threshold. For PFA, invest_tk =
+#                pi_tilde_t * gamma_tk using the univariate schedule in `pi_tilde`.
 # slots:
-#   K         = positive integer number of streams
-#   alpha     = numeric scalar global nominal level
-#   criterion = character, one of c("ARL", "PFA")
-#   threshold = numeric scalar (default 1/alpha)
-#   invest    = numeric N_sched x K matrix of per-stream investments
+#   K               = positive integer number of streams
+#   alpha           = numeric scalar global nominal level
+#   criterion       = character, one of c("ARL", "PFA")
+#   threshold       = numeric scalar (default 1/alpha)
+#   invest          = numeric N_sched x K matrix of per-stream investments (static case)
+#   proximity_graph = NULL or ProximityGraph (adaptive case)
+#   kernel          = NULL or vectorised proximity kernel function(d) -> numeric
+#   zeta            = numeric scalar focus parameter in [0, 1) (adaptive case)
+#   dist_mat        = K-by-K graph distance matrix, cached at construction (adaptive case)
+#   pi_tilde        = numeric univariate spending schedule (adaptive + PFA case)
 setClass("LocalizedDetector",
-         slots = c(K         = "integer",
-                   alpha     = "numeric",
-                   criterion = "character",
-                   threshold = "numeric",
-                   invest    = "matrix"))
+         slots = c(K               = "integer",
+                   alpha           = "numeric",
+                   criterion       = "character",
+                   threshold       = "numeric",
+                   invest          = "matrix",
+                   proximity_graph = "ANY",
+                   kernel          = "ANY",
+                   zeta            = "numeric",
+                   dist_mat        = "matrix",
+                   pi_tilde        = "numeric"))
 
 # Constructor: LocalizedDetector
 # inputs:
 #   K               = positive integer number of streams
 #   alpha           = numeric scalar global nominal level
 #   criterion       = character in c("ARL", "PFA")
-#   allowance       = ARL only: NULL (uniform 1/K; Bonferroni), a length-K numeric vector
-#                     (constant allocation), or an N x K matrix with rows summing to 1.
-#   spending        = PFA only: NULL (geometric schedule split K ways), a length-N numeric
-#                     vector (same schedule per stream, normalised and split K ways), or an
-#                     N x K matrix with all entries summing to 1 (joint spending schedule).
+#   allowance       = ARL only, static case: NULL (uniform 1/K; Bonferroni), a length-K
+#                     numeric vector (constant allocation), or an N x K matrix with rows
+#                     summing to 1. Must be NULL when `proximity_graph` is supplied.
+#   spending        = PFA only: NULL (geometric schedule split K ways / used as pi_tilde),
+#                     a length-N numeric vector (static case: same schedule per stream,
+#                     normalised and split K ways; adaptive case: used directly as the
+#                     univariate pi_tilde schedule), or an N x K matrix with all entries
+#                     summing to 1 (static joint spending schedule; not allowed together
+#                     with `proximity_graph`).
+#   proximity_graph = optional ProximityGraph; when supplied, invest_tk is recomputed
+#                     adaptively every step from the graph-structured allowance
+#                     (Section 5.3) instead of drawn from a precomputed `invest` matrix.
+#   kernel          = vectorised proximity kernel function(d) -> numeric; required when
+#                     `proximity_graph` is supplied (see exponential_kernel/hard_cutoff_kernel)
+#   zeta            = numeric scalar focus parameter in [0, 1) for the adaptive allowance;
+#                     zeta = 0 recovers the uniform Bonferroni allocation
 #   threshold       = optional override (default 1/alpha)
 #   geometric_p     = geometric parameter for auto-generated PFA spending schedule
 #   spending_length = length of auto-generated PFA spending schedule
@@ -201,6 +228,9 @@ LocalizedDetector <- function(K,
                                criterion       = c("ARL", "PFA"),
                                allowance       = NULL,
                                spending        = NULL,
+                               proximity_graph = NULL,
+                               kernel          = NULL,
+                               zeta            = 0,
                                threshold       = NULL,
                                geometric_p     = 0.01,
                                spending_length = 1000) {
@@ -209,6 +239,50 @@ LocalizedDetector <- function(K,
     stop("`K` must be a positive integer.", call. = FALSE)
   criterion <- match.arg(criterion)
   if (is.null(threshold)) threshold <- 1 / alpha
+
+  dist_mat <- matrix(numeric(0), nrow = 0, ncol = 0)
+  pi_tilde <- numeric(0)
+
+  if (!is.null(proximity_graph)) {
+    if (!is(proximity_graph, "ProximityGraph"))
+      stop("`proximity_graph` must be a ProximityGraph.", call. = FALSE)
+    if (is.null(kernel) || !is.function(kernel))
+      stop("`kernel` must be supplied (a vectorised proximity kernel function) ",
+           "when `proximity_graph` is used.", call. = FALSE)
+    if (nrow(proximity_graph@W) != K)
+      stop("`proximity_graph` must have K nodes.", call. = FALSE)
+    if (length(zeta) != 1L || !is.finite(zeta) || zeta < 0 || zeta >= 1)
+      stop("`zeta` must be a scalar in [0, 1).", call. = FALSE)
+
+    dist_mat <- graph_distance_matrix(proximity_graph)
+
+    if (criterion == "ARL") {
+      if (!is.null(allowance))
+        stop("`allowance` must be NULL when `proximity_graph` is supplied ",
+             "(the allowance is computed adaptively).", call. = FALSE)
+      invest <- matrix(rep(1 / K, K), nrow = 1L, ncol = K)   # unused fallback
+    } else {
+      if (is.null(spending)) {
+        pi_tilde <- .geometric_spending(spending_length, p = geometric_p)
+        pi_tilde <- pi_tilde / sum(pi_tilde)
+      } else if (is.numeric(spending) && !is.matrix(spending)) {
+        pi_tilde <- as.numeric(spending)
+        pi_tilde <- pi_tilde / sum(pi_tilde)
+      } else {
+        stop("`spending` must be NULL or a plain numeric vector (the univariate ",
+             "pi_tilde schedule) when `proximity_graph` is supplied; a full N x K ",
+             "joint spending matrix is ambiguous together with a graph allowance.",
+             call. = FALSE)
+      }
+      invest <- matrix(rep(1 / K, K), nrow = 1L, ncol = K)   # unused fallback
+    }
+
+    return(new("LocalizedDetector",
+               K = K, alpha = as.numeric(alpha), criterion = criterion,
+               threshold = as.numeric(threshold), invest = invest,
+               proximity_graph = proximity_graph, kernel = kernel,
+               zeta = as.numeric(zeta), dist_mat = dist_mat, pi_tilde = pi_tilde))
+  }
 
   if (criterion == "ARL") {
     if (is.null(allowance)) {
@@ -249,7 +323,12 @@ LocalizedDetector <- function(K,
       alpha     = as.numeric(alpha),
       criterion = criterion,
       threshold = as.numeric(threshold),
-      invest    = invest)
+      invest    = invest,
+      proximity_graph = NULL,
+      kernel          = NULL,
+      zeta            = 0,
+      dist_mat        = dist_mat,
+      pi_tilde        = pi_tilde)
 }
 
 # Method: run_detector for LocalizedDetector
@@ -279,13 +358,29 @@ setMethod("run_detector", "LocalizedDetector", function(object, evidence, log = 
   invest     <- object@invest
   n_sched    <- nrow(invest)
   log_thresh <- log(object@threshold)
+  adaptive   <- !is.null(object@proximity_graph)
+  dist_mat   <- object@dist_mat
+  kernel     <- object@kernel
+  zeta       <- object@zeta
+  pi_tilde   <- object@pi_tilde
+  n_pi       <- length(pi_tilde)
 
   log_stat  <- matrix(-Inf, nrow = N, ncol = K)
   log_state <- rep(-Inf, K)
   stop_times <- rep(Inf, K)
 
   for (t in seq_len(N)) {
-    inv_t <- if (is_pfa) {
+    inv_t <- if (adaptive) {
+      # A_{t-1}: streams whose current R_{t-1,k} statistic already exceeds threshold
+      active <- which(log_state >= log_thresh)
+      gamma_t <- .proximity_allowance_from_dist(dist_mat, active, kernel, zeta)
+      if (is_pfa) {
+        pi_t <- if (t <= n_pi) pi_tilde[t] else 0
+        pi_t * gamma_t
+      } else {
+        gamma_t
+      }
+    } else if (is_pfa) {
       if (t <= n_sched) invest[t, ] else rep(0, K)
     } else {
       invest[min(t, n_sched), ]

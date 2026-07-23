@@ -21,6 +21,16 @@ setClass("AverageCombiner", contains = "Combiner")
 setClass("UniversalPortfolioCombiner", contains = "Combiner",
          slots = c(mode = "character", resolution = "numeric"))
 
+# Class: GraphCombiner
+# purpose: combine over a DependencyGraph (Section 4.2): average marginal TSMs within
+#          each mutually-dependent block, then multiply the per-block combined TSMs
+#          across blocks (blocks are independent of one another by construction).
+#          Valid provided the dependency graph correctly separates dependent streams
+#          (within a block) from independent ones (across blocks).
+# slots:
+#   graph = DependencyGraph object partitioning the K streams into blocks
+setClass("GraphCombiner", contains = "Combiner", slots = c(graph = "DependencyGraph"))
+
 # Constructor: ProductCombiner
 # inputs:
 #   name = character label
@@ -59,6 +69,17 @@ UniversalPortfolioCombiner <- function(mode = "sparse", resolution = 4,
   stopifnot(resolution >= 1)
   new("UniversalPortfolioCombiner", name = name, mode = mode,
       resolution = as.numeric(resolution))
+}
+
+# Constructor: GraphCombiner
+# inputs:
+#   graph = DependencyGraph; block labels come from dependency_blocks(graph)
+#   name  = character label
+# outputs:
+#   GraphCombiner object
+GraphCombiner <- function(graph, name = "graph") {
+  if (!is(graph, "DependencyGraph")) stop("`graph` must be a DependencyGraph.", call. = FALSE)
+  new("GraphCombiner", name = name, graph = graph)
 }
 
 # Method: combine_streams for ProductCombiner
@@ -205,4 +226,37 @@ setMethod("combine_streams", "UniversalPortfolioCombiner",
     log_wealth <- log_wealth + log_gross
   }
   combined_log_inc
+})
+
+# Method: combine_streams for GraphCombiner
+# inputs:
+#   object  = GraphCombiner object
+#   streams = numeric N-by-K matrix of marginal increment sequences
+#   weights = ignored for this combiner
+#   log     = logical; if TRUE combine log-increments and return log-increments
+# outputs:
+#   numeric length-N vector: average-within-block, product-across-blocks (Section 4.2)
+#
+# Implemented by composing the existing combiners rather than new arithmetic:
+# AverageCombiner() within each block's columns, then ProductCombiner() across the
+# resulting per-block combined vectors.
+setMethod("combine_streams", "GraphCombiner", function(object, streams, weights = NULL, log = FALSE) {
+  if (!is.matrix(streams) || !is.numeric(streams)) {
+    stop("`streams` must be a numeric matrix of marginal increment sequences.", call. = FALSE)
+  }
+  block <- dependency_blocks(object@graph)
+  if (length(block) != ncol(streams)) {
+    stop("Number of columns in `streams` must match the number of nodes in the graph.",
+         call. = FALSE)
+  }
+
+  ub <- sort(unique(block))
+  block_combined <- vapply(ub, function(b) {
+    cols <- streams[, block == b, drop = FALSE]
+    if (ncol(cols) == 1L) return(cols[, 1L])
+    combine_streams(AverageCombiner(), cols, log = log)
+  }, numeric(nrow(streams)))
+
+  if (length(ub) == 1L) return(as.vector(block_combined))
+  combine_streams(ProductCombiner(), block_combined, log = log)
 })

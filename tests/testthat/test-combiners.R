@@ -278,7 +278,64 @@ test_that("ShiryaevRoberts detector runs end-to-end with offline stream combined
   expect_true(is.finite(out$stopping_time) || out$stopping_time == Inf)
 })
 
+# ---- GraphCombiner (Section 4.2) ---------------------------------------------
+
+test_that("GraphCombiner: matches manual average-within-block, product-across-block", {
+  set.seed(21)
+  n <- 15
+  streams <- matrix(runif(n * 4, 0.8, 1.2), n, 4)   # 4 streams, 2 blocks: {1,2}, {3,4}
+  g <- DependencyGraph(blocks = list(c(1, 2), c(3, 4)), K = 4)
+  gc <- GraphCombiner(g)
+
+  block1 <- combine_streams(AverageCombiner(), streams[, 1:2, drop = FALSE])
+  block2 <- combine_streams(AverageCombiner(), streams[, 3:4, drop = FALSE])
+  expected <- combine_streams(ProductCombiner(), cbind(block1, block2))
+
+  out <- combine_streams(gc, streams)
+  expect_equal(out, expected)
+})
+
+test_that("GraphCombiner: log and non-log modes agree", {
+  set.seed(22)
+  n <- 12
+  streams     <- matrix(runif(n * 4, 0.8, 1.2), n, 4)
+  log_streams <- log(streams)
+  g  <- DependencyGraph(blocks = list(c(1, 2), c(3, 4)), K = 4)
+  gc <- GraphCombiner(g)
+
+  out_nat <- combine_streams(gc, streams,     log = FALSE)
+  out_log <- combine_streams(gc, log_streams, log = TRUE)
+  expect_equal(out_log, log(out_nat), tolerance = 1e-10)
+})
+
+test_that("GraphCombiner: all-singleton graph reduces to plain ProductCombiner", {
+  set.seed(23)
+  streams <- matrix(runif(30, 0.8, 1.2), 10, 3)
+  g  <- DependencyGraph(A = matrix(0, 3, 3))   # no edges: 3 singleton blocks
+  gc <- GraphCombiner(g)
+
+  expect_equal(combine_streams(gc, streams), combine_streams(ProductCombiner(), streams))
+})
+
+test_that("GraphCombiner: one fully-connected block reduces to plain AverageCombiner", {
+  set.seed(24)
+  streams <- matrix(runif(30, 0.8, 1.2), 10, 3)
+  A <- matrix(1, 3, 3); diag(A) <- 0
+  g  <- DependencyGraph(A = A)   # one block containing all 3 streams
+  gc <- GraphCombiner(g)
+
+  expect_equal(combine_streams(gc, streams), combine_streams(AverageCombiner(), streams))
+})
+
+test_that("GraphCombiner: errors when stream count does not match graph size", {
+  streams <- matrix(runif(20), 10, 2)
+  g  <- DependencyGraph(blocks = list(c(1, 2), c(3, 4)), K = 4)
+  gc <- GraphCombiner(g)
+  expect_error(combine_streams(gc, streams), "match the number of nodes")
+})
+
 test_that("product beats universal portfolio beats average", {
+  set.seed(1)
   s1 <- runif(20, 0.9, 1.3)
   s2 <- runif(20, 0.3, 1.9)
   s3 <- runif(20, 0.9, 3.0)
