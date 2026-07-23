@@ -251,11 +251,15 @@ BernoulliModel <- function(p_pre, p_post, name = "bernoulli") {
 }
 
 # Constructor: BoundedModel
-# purpose: builds a [0,1]-bounded test martingale model with a pluggable betting strategy
+# purpose: builds a non-negative-data test martingale model with a pluggable betting strategy.
+#          The increment 1 + lambda*(X - eta) is non-negative whenever X >= 0 and
+#          lambda <= 1/eta, which the AGRAPA cap (c/eta, c < 1) enforces automatically.
+#          eta need only be a positive upper bound on E_null[X]; it does not need to be < 1.
 # inputs:
-#   eta  = null mean upper bound: a scalar in (0, 1) for IID pre-change models,
-#          or a length-N numeric vector of time-varying conditional null means
-#          (all values must lie in (0, 1)).  Scalars are backward-compatible.
+#   eta  = null mean upper bound: a positive scalar or a length-N positive numeric vector
+#          of time-varying conditional null means.
+#          Classic use case: X in [0,1] data with eta in (0,1).
+#          Extended use case: X >= 0 data (e.g. exp-residuals) with eta in (0, Inf).
 #          Use ARBoundedModel() to construct the eta vector for AR(p) pre-change data.
 #   bets = BettingStrategy object (default: AGRAPABet())
 #   name = character model label
@@ -263,8 +267,8 @@ BernoulliModel <- function(p_pre, p_post, name = "bernoulli") {
 #   BoundedModel object
 BoundedModel <- function(eta, bets = AGRAPABet(), name = "bounded") {
   eta <- as.numeric(eta)
-  if (length(eta) == 0L || !all(is.finite(eta)) || any(eta <= 0) || any(eta >= 1))
-    stop("`eta` must be a scalar or vector with all values in (0, 1).", call. = FALSE)
+  if (length(eta) == 0L || !all(is.finite(eta)) || any(eta <= 0))
+    stop("`eta` must be a non-empty positive finite numeric scalar or vector.", call. = FALSE)
   if (!is(bets, "BettingStrategy"))
     stop("`bets` must be a BettingStrategy object.", call. = FALSE)
   new("BoundedModel", name = name, eta = eta, bets = bets)

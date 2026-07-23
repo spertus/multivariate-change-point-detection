@@ -75,12 +75,16 @@ test_that("BoundedModel accepts FixedBet", {
   expect_s4_class(m@bets, "FixedBet")
 })
 
-test_that("BoundedModel rejects eta outside (0, 1)", {
-  expect_error(BoundedModel(eta = 0),          "`eta` must be")
-  expect_error(BoundedModel(eta = 1),          "`eta` must be")
-  expect_error(BoundedModel(eta = -0.1),       "`eta` must be")
-  expect_error(BoundedModel(eta = 1.1),        "`eta` must be")
-  expect_error(BoundedModel(eta = c(0.3, 1)),  "`eta` must be")  # vector with out-of-range value
+test_that("BoundedModel rejects non-positive or non-finite eta", {
+  expect_error(BoundedModel(eta = 0),    "`eta` must be")
+  expect_error(BoundedModel(eta = -0.1), "`eta` must be")
+  expect_error(BoundedModel(eta = -Inf), "`eta` must be")
+  expect_error(BoundedModel(eta = NaN),  "`eta` must be")
+  # eta >= 1 is valid when data is non-negative (exp-residual use case)
+  expect_no_error(BoundedModel(eta = 1))
+  expect_no_error(BoundedModel(eta = 1.1))
+  expect_no_error(BoundedModel(eta = 2.5))
+  expect_no_error(BoundedModel(eta = c(0.3, 1.5)))
 })
 
 test_that("BoundedModel rejects invalid bets object", {

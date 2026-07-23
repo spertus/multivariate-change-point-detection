@@ -257,6 +257,115 @@ test_that("LocalizedDetector rejects wrong number of columns", {
   expect_error(run_detector(ld, evidence = ev), "3 column")
 })
 
+# ---- LocalizedDetector adaptive (graph-structured) spending tests -----------
+
+test_that("LocalizedDetector adaptive: zeta = 0 reproduces uniform-Bonferroni stopping times", {
+  K <- 2; n <- 200; alpha <- 0.05; Lambda <- 1.3
+  ev <- matrix(rep(Lambda, n * K), nrow = n, ncol = K)
+
+  W <- matrix(0, K, K); W[1, 2] <- W[2, 1] <- 1
+  g <- ProximityGraph(W)
+  ld_adaptive <- LocalizedDetector(K = K, alpha = alpha, criterion = "ARL",
+                                    proximity_graph = g,
+                                    kernel = exponential_kernel(xi = 1), zeta = 0)
+  ld_static   <- LocalizedDetector(K = K, alpha = alpha, criterion = "ARL")
+
+  out_adaptive <- run_detector(ld_adaptive, evidence = ev)
+  out_static   <- run_detector(ld_static,   evidence = ev)
+
+  expect_equal(out_adaptive$stopping_time, out_static$stopping_time)
+  for (k in seq_len(K)) {
+    expect_equal(out_adaptive$stream_results[[k]]$statistic,
+                 out_static$stream_results[[k]]$statistic)
+  }
+})
+
+test_that("LocalizedDetector adaptive: allowance reallocates toward the graph-neighbor of an alarmed stream", {
+  # Chain 1-2-3, unit weights. Stream 1 (evidence=5) alarms at t=2 under alpha=0.5
+  # (threshold=2): R_1(1) = 5*(0+1/3) = 5/3 < 2; R_1(2) = 5*(5/3+1/3) = 10 >= 2.
+  # From t=3 onward, active={1}, so gamma_2 > gamma_3 (node 2 is closer to node 1)
+  # at every step. Streams 2 and 3 share identical evidence, so their statistics
+  # must diverge in favor of stream 2 from t=3 onward.
+  K <- 3; n <- 8; alpha <- 0.5
+  ev <- cbind(rep(5, n), rep(1.02, n), rep(1.02, n))
+
+  W <- matrix(0, K, K)
+  W[1, 2] <- W[2, 1] <- 1
+  W[2, 3] <- W[3, 2] <- 1
+  g <- ProximityGraph(W)
+  ld <- LocalizedDetector(K = K, alpha = alpha, criterion = "ARL",
+                           proximity_graph = g,
+                           kernel = exponential_kernel(xi = 1), zeta = 0.9)
+  out <- run_detector(ld, evidence = ev)
+
+  expect_equal(out$stream_results$stream_1$stopping_time, 2)
+  s2 <- out$stream_results$stream_2$statistic
+  s3 <- out$stream_results$stream_3$statistic
+  expect_equal(s2[1:2], s3[1:2])       # identical while allowance is still uniform
+  expect_true(all(s2[3:n] > s3[3:n]))  # diverge once node 1 is active
+})
+
+test_that("LocalizedDetector adaptive: constructor requires a kernel", {
+  W <- matrix(0, 2, 2); W[1, 2] <- W[2, 1] <- 1
+  g <- ProximityGraph(W)
+  expect_error(
+    LocalizedDetector(K = 2, alpha = 0.05, criterion = "ARL", proximity_graph = g),
+    "kernel"
+  )
+})
+
+test_that("LocalizedDetector adaptive: allowance + proximity_graph together errors", {
+  W <- matrix(0, 2, 2); W[1, 2] <- W[2, 1] <- 1
+  g <- ProximityGraph(W)
+  expect_error(
+    LocalizedDetector(K = 2, alpha = 0.05, criterion = "ARL",
+                       proximity_graph = g, kernel = exponential_kernel(1),
+                       allowance = c(0.5, 0.5)),
+    "NULL when"
+  )
+})
+
+test_that("LocalizedDetector adaptive: proximity_graph node count must match K", {
+  W <- matrix(0, 3, 3)
+  W[1, 2] <- W[2, 1] <- W[2, 3] <- W[3, 2] <- 1
+  g <- ProximityGraph(W)
+  expect_error(
+    LocalizedDetector(K = 2, alpha = 0.05, criterion = "ARL",
+                       proximity_graph = g, kernel = exponential_kernel(1)),
+    "K nodes"
+  )
+})
+
+test_that("LocalizedDetector adaptive: PFA with a full N x K spending matrix errors", {
+  W <- matrix(0, 2, 2); W[1, 2] <- W[2, 1] <- 1
+  g <- ProximityGraph(W)
+  bad_spending <- matrix(runif(20), 10, 2)
+  expect_error(
+    LocalizedDetector(K = 2, alpha = 0.05, criterion = "PFA",
+                       proximity_graph = g, kernel = exponential_kernel(1),
+                       spending = bad_spending),
+    "ambiguous"
+  )
+})
+
+test_that("LocalizedDetector adaptive: PFA with graph-structured spending is PFA-valid (small-sample sanity)", {
+  # A weak-evidence null run should rarely alarm within a short horizon under a
+  # tiny alpha; this is a coarse sanity check, not a calibration test.
+  K <- 3; n <- 100; alpha <- 0.01
+  set.seed(99)
+  ev <- matrix(exp(rnorm(n * K, mean = -0.05, sd = 0.05)), n, K)
+
+  W <- matrix(0, K, K)
+  W[1, 2] <- W[2, 1] <- W[2, 3] <- W[3, 2] <- 1
+  g <- ProximityGraph(W)
+  ld <- LocalizedDetector(K = K, alpha = alpha, criterion = "PFA",
+                           proximity_graph = g,
+                           kernel = exponential_kernel(xi = 1), zeta = 0.5)
+  out <- run_detector(ld, evidence = ev)
+  expect_true(is.list(out$stream_results))
+  expect_equal(length(out$stream_results), K)
+})
+
 # ---- run_sr_per_clock tests -------------------------------------------------
 
 test_that("run_sr_per_clock: hand-computed values match for small example", {

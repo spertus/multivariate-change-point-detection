@@ -23,3 +23,13 @@ Suggests:
 VignetteBuilder: knitr
 Config/testthat/edition: 3
 RoxygenNote: 7.3.2
+Collate:
+    'aaa-generics.R'
+    'graphs.R'
+    'bets.R'
+    'combiners.R'
+    'detectors.R'
+    'models.R'
+    'simulation.R'
+    'tsm.R'
+    'utils.R'

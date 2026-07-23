@@ -408,8 +408,8 @@ p_inc_ill <- ggplot(df_inc_ill, aes(t, inc, fill = sign)) +
   scale_fill_manual(
     values  = c("positive" = "#2ca02c", "negative" = "#d62728"),
     guide   = "none") +
-  labs(x = NULL, y = expression(log~m[t]),
-       title = "Log likelihood increments  (green = positive, red = negative)") +
+  labs(x = NULL, y = expression(log~Λ[t]),
+       title = "Log TSM increments  (green = positive, red = negative)") +
   theme_talk +
   theme(axis.text.x = element_blank(), axis.ticks.x = element_blank())
 
