@@ -1403,103 +1403,265 @@ if (!file.exists(loc_graph_csv)) {
 
 loc_graph_raw <- read.csv(loc_graph_csv, stringsAsFactors = FALSE)
 
-graph_levels <- c("hub_spoke", "fully_connected", "linear")
-graph_labels <- c("Hub-and-spoke", "Fully connected", "Linear chain")
-
+# graph_key folds hub_connected into the hub_spoke label (K=24 only; "n/a"
+# elsewhere) so every condition gets a single x-axis category.
 strategy_levels <- c("oracle", "graph_correct", "graph_misspec", "uniform")
 strategy_labels <- c("Oracle (static, fixed)", "Graph-adaptive (correct)",
                      "Graph-adaptive (mis-specified)", "Uniform (Bonferroni)")
+strategy_pal <- setNames(c("#1a9641", "#457b9d", "#e07020", "#a6a6a6"), strategy_labels)
 
 loc_graph <- loc_graph_raw %>%
   mutate(
-    graph_label    = factor(graph_type, levels = graph_levels, labels = graph_labels),
+    graph_key = case_when(
+      graph_type == "hub_spoke" & hub_connected == "disconnected" ~ "hub_spoke_disc",
+      graph_type == "hub_spoke" & hub_connected == "line"         ~ "hub_spoke_line",
+      TRUE ~ graph_type
+    ),
     speed_label    = factor(speed, levels = c("fast", "slow"),
                             labels = c("Fast propagation", "Slow propagation")),
     strategy_label = factor(strategy, levels = strategy_levels, labels = strategy_labels)
   )
 
-strategy_pal <- setNames(
-  c("#1a9641", "#457b9d", "#e07020", "#a6a6a6"),
-  strategy_labels
-)
-
 alpha_used  <- unique(loc_graph$alpha)
 thresh_used <- 1 / alpha_used
 
-# ── Fig 12a: total conditional average delay, by graph / speed / strategy ────
-loc_change <- loc_graph %>% filter(has_change)
+# Graph-label levels differ by K: K=6's hub_spoke is a single hub (no
+# disconnected/line variant); K=24's hub_spoke splits into two.
+graph_levels_6  <- c("hub_spoke", "fully_connected", "linear")
+graph_labels_6  <- c("Hub-and-spoke", "Fully connected", "Linear chain")
+graph_levels_24 <- c("hub_spoke_disc", "hub_spoke_line", "fully_connected", "linear")
+graph_labels_24 <- c("Hub-spoke (disconnected)", "Hub-spoke (line)",
+                     "Fully connected", "Linear chain")
 
-p12a <- ggplot(loc_change, aes(graph_label, CAD_total, fill = strategy_label)) +
-  geom_col(position = position_dodge(width = 0.8), width = 0.7) +
-  scale_fill_manual(values = strategy_pal, name = NULL) +
-  facet_wrap(~ speed_label) +
-  labs(
-    title    = "Total conditional average delay under four spending strategies",
-    subtitle = expression(
-      "Change propagates along the proximity graph (Section 4.3); K = 6, " *
-      alpha * " = 0.001"),
-    x = NULL, y = "CAD (summed over truly-changing streams)"
-  ) +
-  theme_talk +
-  theme(legend.position = "bottom", axis.text.x = element_text(angle = 15, hjust = 1))
+.with_graph_label <- function(df, k) {
+  if (k == 6) {
+    df %>% filter(K == 6) %>%
+      mutate(graph_label = factor(graph_key, levels = graph_levels_6, labels = graph_labels_6))
+  } else {
+    df %>% filter(K == 24) %>%
+      mutate(graph_label = factor(graph_key, levels = graph_levels_24, labels = graph_labels_24))
+  }
+}
 
-ggsave(file.path(sim_dir_loc, "graph_cad_total.png"),
-       p12a, width = 9.5, height = 4.8, dpi = 220)
+# ── Fig 12a: total conditional average delay, by graph / strategy (slow
+#            propagation only -- the sparse regime where targeted spending
+#            actually has something to show; fast/dense collapses the four
+#            strategies together and mostly just added visual clutter) ─────
+make_cad_fig <- function(k) {
+  df <- .with_graph_label(
+    loc_graph %>% filter(has_change, speed_label == "Slow propagation"), k)
+  p <- ggplot(df, aes(graph_label, CAD_total, fill = strategy_label)) +
+    geom_col(position = position_dodge(width = 0.8), width = 0.7) +
+    scale_fill_manual(values = strategy_pal, name = NULL) +
+    labs(
+      title    = sprintf("Total conditional average delay under four spending strategies (K = %d)", k),
+      subtitle = expression(
+        "Change propagates along the proximity graph (Section 4.3), slow propagation; " *
+        alpha * " = 0.001"),
+      x = NULL, y = "CAD (summed over changing streams)"
+    ) +
+    theme_talk +
+    theme(legend.position = "bottom", axis.text.x = element_text(angle = 30, hjust = 1),
+          plot.margin = margin(5.5, 5.5, 5.5, 70))
+  ggsave(file.path(sim_dir_loc, sprintf("graph_cad_total_k%d.png", k)),
+        p, width = 9.8, height = 4.8, dpi = 220)
+}
+make_cad_fig(6)
+make_cad_fig(24)
 
 # ── Fig 12b: accumulating detections over time since the outbreak began ──────
-detect_long <- loc_change %>%
-  select(graph_label, speed_label, strategy_label,
-         detect_frac_early, detect_frac_mid, detect_frac_late) %>%
-  pivot_longer(starts_with("detect_frac"),
-               names_to = "checkpoint", values_to = "detect_frac") %>%
-  mutate(checkpoint = factor(checkpoint,
-                             levels = c("detect_frac_early", "detect_frac_mid",
-                                        "detect_frac_late"),
-                             labels = c("early", "mid", "late")))
+make_detect_fig <- function(k) {
+  df <- .with_graph_label(loc_graph %>% filter(has_change), k)
+  detect_long <- df %>%
+    select(graph_label, speed_label, strategy_label,
+           detect_frac_early, detect_frac_mid, detect_frac_late) %>%
+    pivot_longer(starts_with("detect_frac"),
+                names_to = "checkpoint", values_to = "detect_frac") %>%
+    mutate(checkpoint = factor(checkpoint,
+                               levels = c("detect_frac_early", "detect_frac_mid",
+                                          "detect_frac_late"),
+                               labels = c("early", "mid", "late")))
 
-p12b <- ggplot(detect_long,
-               aes(checkpoint, detect_frac, colour = strategy_label,
-                   group = strategy_label)) +
-  geom_line(linewidth = 0.8) +
-  geom_point(size = 2.0) +
-  scale_colour_manual(values = strategy_pal, name = NULL) +
-  scale_y_continuous(limits = c(0, 1)) +
-  facet_grid(graph_label ~ speed_label) +
-  labs(
-    title    = "Accumulating detections after the outbreak begins",
-    subtitle = "Fraction of truly-changing streams already flagged, by checkpoint since nu0",
-    x = "checkpoint since nu0", y = "fraction of changing streams detected"
-  ) +
-  theme_talk +
-  theme(legend.position = "bottom", strip.text.y = element_text(angle = 0),
-        strip.text = element_text(face = "bold"))
-
-ggsave(file.path(sim_dir_loc, "graph_detection_curve.png"),
-       p12b, width = 9, height = 7.5, dpi = 220)
+  p <- ggplot(detect_long,
+             aes(checkpoint, detect_frac, colour = strategy_label,
+                 group = strategy_label)) +
+    geom_line(linewidth = 0.8) +
+    geom_point(size = 2.0) +
+    scale_colour_manual(values = strategy_pal, name = NULL) +
+    scale_y_continuous(limits = c(0, 1)) +
+    facet_grid(graph_label ~ speed_label) +
+    labs(
+      title    = sprintf("Accumulating detections after the outbreak begins (K = %d)", k),
+      subtitle = "Fraction of truly-changing streams already flagged, by checkpoint since nu0",
+      x = "checkpoint since nu0", y = "fraction of changing streams detected"
+    ) +
+    theme_talk +
+    theme(legend.position = "bottom", strip.text.y = element_text(angle = 0),
+          strip.text = element_text(face = "bold"))
+  ggsave(file.path(sim_dir_loc, sprintf("graph_detection_curve_k%d.png", k)),
+        p, width = 9, height = if (k == 24) 9.5 else 7.5, dpi = 220)
+}
+make_detect_fig(6)
+make_detect_fig(24)
 
 # ── Fig 12c: Type-I diagnostics under the global null ─────────────────────────
-loc_null <- loc_graph %>% filter(!has_change)
+make_arl_fig <- function(k) {
+  df <- .with_graph_label(loc_graph %>% filter(!has_change), k)
+  p <- ggplot(df, aes(graph_label, ARL, fill = strategy_label)) +
+    geom_col(position = position_dodge(width = 0.8), width = 0.7) +
+    geom_hline(yintercept = thresh_used, linetype = "dotted",
+               colour = "grey20", linewidth = 0.7) +
+    annotate("text", x = 0.6, y = thresh_used * 1.08, label = "1/alpha",
+             parse = TRUE, hjust = 0, size = 3.2, colour = "grey20") +
+    scale_fill_manual(values = strategy_pal, name = NULL) +
+    facet_wrap(~ speed_label) +
+    labs(
+      title    = sprintf("Global ARL under the null (no change) (K = %d)", k),
+      subtitle = expression(
+        "Horizon-censored empirical mean (a lower bound on the true ARL); " * alpha * " = 0.001"),
+      x = NULL, y = "ARL (censored at N + 1)"
+    ) +
+    theme_talk +
+    theme(legend.position = "bottom", axis.text.x = element_text(angle = 30, hjust = 1),
+          plot.margin = margin(5.5, 5.5, 5.5, 70))
+  ggsave(file.path(sim_dir_loc, sprintf("graph_type1_arl_k%d.png", k)),
+        p, width = if (k == 24) 11 else 10.5, height = 4.8, dpi = 220)
+}
+make_arl_fig(6)
+make_arl_fig(24)
 
-p12c_arl <- ggplot(loc_null, aes(graph_label, ARL, fill = strategy_label)) +
-  geom_col(position = position_dodge(width = 0.8), width = 0.7) +
-  geom_hline(yintercept = thresh_used, linetype = "dotted",
-             colour = "grey20", linewidth = 0.7) +
-  annotate("text", x = 0.6, y = thresh_used * 1.08, label = "1/alpha",
-           parse = TRUE, hjust = 0, size = 3.2, colour = "grey20") +
-  scale_fill_manual(values = strategy_pal, name = NULL) +
-  facet_wrap(~ speed_label) +
-  labs(
-    title    = "Global ARL under the null (no change)",
-    subtitle = expression(
-      "Horizon-censored empirical mean (a lower bound on the true ARL); K = 6, " *
-      alpha * " = 0.001"),
-    x = NULL, y = "ARL (censored at N + 1)"
-  ) +
-  theme_talk +
-  theme(legend.position = "bottom", axis.text.x = element_text(angle = 15, hjust = 1))
-
-ggsave(file.path(sim_dir_loc, "graph_type1_arl.png"),
-       p12c_arl, width = 9.5, height = 4.8, dpi = 220)
-
-message("Wrote figures/simulations/localization/ (3 graph-localization figures).")
+message("Wrote figures/simulations/localization/ (6 graph-localization figures, K=6 & K=24).")
 } # end loc_graph_csv block
+
+# ======================================================================
+# 13. Graph topology visualizations
+#     Draws the three proximity-graph topologies (hub_spoke, fully_connected,
+#     linear) at both graph sizes used by the localization simulation
+#     (K = 6, K = 24). Node layout is a plotting-only convenience; the edges
+#     drawn are read directly off the actual ProximityGraph objects built by
+#     localization_graph_builders.R (also sourced by the simulation itself),
+#     so this figure can never drift from what is actually simulated.
+# ======================================================================
+source(file.path(PKG_DIR, "simulations", "localization_graph_builders.R"))
+
+# ---- Layout helpers: node (x, y) positions only; edges come from graph@W ----
+
+.layout_linear <- function(K) data.frame(node = seq_len(K), x = seq_len(K), y = 0)
+
+.layout_circle <- function(K, radius = 1) {
+  theta <- 2 * pi * (seq_len(K) - 1) / K
+  data.frame(node = seq_len(K), x = radius * cos(theta), y = radius * sin(theta))
+}
+
+# Hubs laid out left-to-right; each hub's spokes fan out below it. Whether
+# hub-hub edges are actually drawn depends only on the graph's own W matrix
+# (disconnected vs line), not on this layout.
+.layout_hub_spoke <- function(n_hubs, spokes_per_hub) {
+  hub_spacing  <- 3.2
+  spoke_radius <- 1.3
+  hub_x <- (seq_len(n_hubs) - 1) * hub_spacing
+  nodes <- data.frame(node = seq_len(n_hubs), x = hub_x, y = 0)
+  spoke_rows <- vector("list", n_hubs)
+  idx <- n_hubs
+  for (h in seq_len(n_hubs)) {
+    theta <- seq(200, 340, length.out = spokes_per_hub) * pi / 180
+    spoke_idx <- idx + seq_len(spokes_per_hub)
+    spoke_rows[[h]] <- data.frame(
+      node = spoke_idx,
+      x    = hub_x[h] + spoke_radius * cos(theta),
+      y    = spoke_radius * sin(theta)
+    )
+    idx <- idx + spokes_per_hub
+  }
+  rbind(nodes, do.call(rbind, spoke_rows))
+}
+
+# Function: .graph_edges
+# purpose: from/to coordinate rows for geom_segment, read off a ProximityGraph's
+#          weight matrix (upper triangle, positive entries) plus a node layout.
+.graph_edges <- function(graph, pos) {
+  W   <- graph@W
+  idx <- which(upper.tri(W) & W > 0, arr.ind = TRUE)
+  if (nrow(idx) == 0L) {
+    return(data.frame(x = numeric(0), y = numeric(0), xend = numeric(0), yend = numeric(0)))
+  }
+  data.frame(
+    x    = pos$x[idx[, 1]], y    = pos$y[idx[, 1]],
+    xend = pos$x[idx[, 2]], yend = pos$y[idx[, 2]]
+  )
+}
+
+# Function: .plot_topology
+# purpose: one topology panel -- nodes (coloured by role) plus edges.
+#          Uses a padded SQUARE bounding box (not just coord_fixed()'s default)
+#          because some layouts have near-zero range on one axis (e.g. the
+#          linear chain's y = 0 throughout); without a forced square box,
+#          patchwork allocates wildly different panel widths per topology
+#          when combining panels with coord_fixed(), squeezing some to slivers.
+.plot_topology <- function(graph, pos, title, node_role = "node") {
+  edges    <- .graph_edges(graph, pos)
+  pos$role <- node_role
+  dense    <- nrow(pos) > 10
+  xr <- range(pos$x); yr <- range(pos$y)
+  half <- max(diff(xr), diff(yr)) / 2 + 0.6
+  cx <- mean(xr); cy <- mean(yr)
+  ggplot() +
+    (if (nrow(edges) > 0)
+      geom_segment(data = edges, aes(x = x, y = y, xend = xend, yend = yend),
+                  colour = "grey55", linewidth = 0.4, alpha = 0.6)
+     else NULL) +
+    geom_point(data = pos, aes(x, y, colour = role), size = if (dense) 2.6 else 5.5) +
+    scale_colour_manual(values = c(hub = "#e63946", spoke = "#457b9d", node = "#457b9d"),
+                        guide = "none") +
+    coord_fixed(ratio = 1, xlim = cx + c(-half, half), ylim = cy + c(-half, half)) +
+    labs(title = title) +
+    theme_void(base_size = 12) +
+    theme(plot.title = element_text(face = "bold", size = 11, hjust = 0.5))
+}
+
+# ── K = 6 topologies ──────────────────────────────────────────────────────
+pos_hub6 <- .layout_hub_spoke(n_hubs = 1, spokes_per_hub = 5)
+pos_fc6  <- .layout_circle(6)
+pos_lin6 <- .layout_linear(6)
+
+p_hub6 <- .plot_topology(build_graph("hub_spoke", 6), pos_hub6,
+                         "Hub-and-spoke (K = 6)", node_role = c("hub", rep("spoke", 5)))
+p_fc6  <- .plot_topology(build_graph("fully_connected", 6), pos_fc6,
+                         "Fully connected (K = 6)")
+p_lin6 <- .plot_topology(build_graph("linear", 6), pos_lin6,
+                         "Linear chain (K = 6)")
+
+p_topo6 <- p_hub6 + p_fc6 + p_lin6 +
+  plot_layout(nrow = 1) +
+  plot_annotation(
+    title = "Proximity graph topologies used in the localization simulation (K = 6)")
+
+ggsave("figures/graph_topologies_k6.png", p_topo6, width = 11, height = 4, dpi = 220)
+
+# ── K = 24 topologies ─────────────────────────────────────────────────────
+# hub_spoke becomes 4 hubs x 5 spokes each; hub connectivity (disconnected vs
+# line) only changes which edges exist among the 4 hubs themselves, so both
+# variants share the same layout and differ only in which segments are drawn.
+pos_hub24 <- .layout_hub_spoke(n_hubs = 4, spokes_per_hub = 5)
+pos_fc24  <- .layout_circle(24)
+pos_lin24 <- .layout_linear(24)
+roles_hub24 <- c(rep("hub", 4), rep("spoke", 20))
+
+p_hub24_disc <- .plot_topology(build_graph("hub_spoke", 24, "disconnected"), pos_hub24,
+                               "Disconnected hub-and-spoke",
+                               node_role = roles_hub24)
+p_hub24_line <- .plot_topology(build_graph("hub_spoke", 24, "line"), pos_hub24,
+                               "Linear hub-and-spoke",
+                               node_role = roles_hub24)
+p_fc24  <- .plot_topology(build_graph("fully_connected", 24), pos_fc24,
+                          "Fully connected")
+p_lin24 <- .plot_topology(build_graph("linear", 24), pos_lin24,
+                          "Linear chain")
+
+p_topo24 <- (p_hub24_disc + p_hub24_line) / (p_fc24 + p_lin24) +
+  plot_annotation(
+    title = "")
+
+ggsave("figures/graph_topologies_k24.png", p_topo24, width = 11, height = 8, dpi = 220)
+
+message("Wrote figures/graph_topologies_k6.png and figures/graph_topologies_k24.png.")

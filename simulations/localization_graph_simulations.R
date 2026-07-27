@@ -2,11 +2,14 @@
 # Simulation study for graph-structured localization (Sections 4.3, 5.3 of
 # Spertus et al. 2026).
 #
-# K = 6 streams sit on a ProximityGraph. Under the propagation-on-a-graph
-# configuration model of Section 4.3, a change originates at a source node at
-# time nu0 and spreads outward: nu_k = nu0 + scale * d_G(source, k). We compare
-# four spending strategies, both under the global null (no change) and under
-# the propagation-configuration alternative:
+# K in {6, 24} streams sit on a ProximityGraph (topologies defined in the
+# sourced localization_graph_builders.R, shared with the figures so the
+# graphs simulated and the graphs drawn can never drift apart). Under the
+# propagation-on-a-graph configuration model of Section 4.3, a change
+# originates at a source node at time nu0 and spreads outward:
+# nu_k = nu0 + scale * d_G(source, k). We compare four spending strategies,
+# both under the global null (no change) and under the propagation-
+# configuration alternative:
 #   oracle         — static allowance (Theorem 1) concentrating most of the
 #                    budget, from t=1, equally across the streams known (only
 #                    to the simulator) to truly change within the horizon.
@@ -23,8 +26,20 @@
 # the same spending allowance also controls the error over patience of the
 # associated monitoring rule, so no separate EOP-specific machinery is needed.
 #
+# Graph sizes: K = 6 (as before) and K = 24. hub_spoke scales structurally,
+# not just numerically: at K = 6 it is a single hub + 5 spokes; at K = 24 it
+# becomes 4 hubs x 5 spokes each (multi_hub_graph in the sourced builders
+# file), with the hubs themselves either disconnected (4 separate star
+# components -- a clustered-dependency-graph scenario where change can only
+# ever reach one cluster) or chained in a line (hub_1--hub_2--hub_3--hub_4,
+# through which change can eventually reach every cluster). This
+# hub_connected factor only applies to (graph_type == "hub_spoke", K == 24);
+# it is fixed at "n/a" everywhere else. linear and fully_connected scale to
+# K = 24 with no structural change (just more nodes/edges).
+#
 # Output columns:
-#   Condition: graph_type, speed, strategy, has_change, K, alpha, N, nu0, scale, n_rep
+#   Condition: graph_type, speed, strategy, has_change, K, hub_connected,
+#              alpha, N, nu0, scale, n_rep
 #   Type-I diagnostics (meaningful mainly when has_change = FALSE):
 #     ARL          = mean global stopping time (capped at N+1)
 #     frac_alarmed = empirical P(any stream alarms within the horizon)
@@ -43,7 +58,8 @@
 #                            nu0 — the accumulating-detections curve
 #
 # ── Timing (measured, 8 cores via parallel::mclapply over conditions) ──────
-#   Grid: graph_type(3) x speed(2) x strategy(4) x has_change(2) = 48 conditions.
+#   Grid: graph_type(3) x speed(2) x strategy(4) x has_change(2) x K(2), with
+#   hub_spoke x K=24 additionally split by hub_connected(2) = 112 conditions.
 #   Quick mode (RUN_FULL = FALSE): N=800,  50 reps  per condition
 #   Full  mode (RUN_FULL = TRUE) : N=3000, 300 reps per condition
 #   (see console output of the most recent run for measured wall-clock time)
@@ -51,13 +67,21 @@
 
 library(multichangepoints)
 
+# ── -1. Shared graph-topology builders (also used by ssc-2026/figures.R) ───
+
+.pkg_root <- local({
+  d <- normalizePath(getwd())
+  while (!file.exists(file.path(d, "DESCRIPTION")) && d != dirname(d)) d <- dirname(d)
+  d
+})
+source(file.path(.pkg_root, "simulations", "localization_graph_builders.R"))
+
 # ── 0. Mode switch ──────────────────────────────────────────────────────────
 
 RUN_FULL <- TRUE          # set TRUE for the full grid
 
 # ── 1. Fixed simulation constants ───────────────────────────────────────────
 
-K         <- 6L
 ALPHA     <- 0.001
 MU_PRE    <- 0.3
 SIGMA_INN <- 0.06          # keeps data in ~[0.06, 0.54] subset of [0,1]
@@ -92,39 +116,10 @@ SCALE_SLOW_CHAIN <- REMAIN * 0.7   # linear: source + immediate (1-hop) neighbor
 # kernel nearly flat under slow propagation (bandwidth >> 1-5 hop distances).
 KERNEL_XI <- 1.5
 
-# ── 2. Graph builders (unit edge weights) ───────────────────────────────────
-
-hub_spoke_graph <- function(K) {
-  W <- matrix(0, K, K)
-  for (k in 2:K) W[1, k] <- W[k, 1] <- 1
-  ProximityGraph(W)
-}
-
-fully_connected_graph <- function(K) {
-  W <- matrix(1, K, K)
-  diag(W) <- 0
-  ProximityGraph(W)
-}
-
-linear_graph <- function(K) {
-  W <- matrix(0, K, K)
-  for (k in seq_len(K - 1L)) W[k, k + 1L] <- W[k + 1L, k] <- 1
-  ProximityGraph(W)
-}
-
-GRAPH_BUILDERS <- list(
-  hub_spoke       = hub_spoke_graph,
-  fully_connected = fully_connected_graph,
-  linear          = linear_graph
-)
-
-# Function: pick_source
-# purpose: source node for the propagation model — fixed (hub / chain end) for
-#          hub-spoke and linear graphs; uniformly random each replicate for the
-#          fully-connected graph (per spec: "a random node changes").
-pick_source <- function(graph_type, K) {
-  if (graph_type == "fully_connected") sample.int(K, 1L) else 1L
-}
+# ── 2. Graph builders ─────────────────────────────────────────────────────
+# (build_graph, hub_spoke_graph, fully_connected_graph, linear_graph,
+#  multi_hub_graph, pick_source -- sourced above from
+#  localization_graph_builders.R, shared with ssc-2026/figures.R)
 
 # Focus parameter shared by both adaptive-graph strategies (correct/misspec) —
 # only the assumed graph differs between them, so zeta is held fixed for a
@@ -188,13 +183,29 @@ build_detector <- function(strategy, K, alpha, true_graph, misspec_graph, kernel
 
 # ── 3. Parameter grid ────────────────────────────────────────────────────────
 
-param_grid <- expand.grid(
-  graph_type = names(GRAPH_BUILDERS),
+# hub_connected only applies to (graph_type == "hub_spoke", K == 24); it is
+# fixed at "n/a" everywhere else rather than needlessly duplicating every
+# other condition across a factor that has no effect on it.
+.base_grid <- expand.grid(
+  graph_type = c("hub_spoke", "fully_connected", "linear"),
   speed      = c("fast", "slow"),
   strategy   = c("oracle", "uniform", "graph_correct", "graph_misspec"),
   has_change = c(TRUE, FALSE),
+  K          = c(6L, 24L),
   stringsAsFactors = FALSE
 )
+
+.is_multi_hub <- .base_grid$graph_type == "hub_spoke" & .base_grid$K == 24L
+
+.grid_plain <- .base_grid[!.is_multi_hub, ]
+.grid_plain$hub_connected <- "n/a"
+
+.grid_hub <- .base_grid[.is_multi_hub, ]
+.grid_hub_disc <- .grid_hub; .grid_hub_disc$hub_connected <- "disconnected"
+.grid_hub_line <- .grid_hub; .grid_hub_line$hub_connected <- "line"
+
+param_grid <- rbind(.grid_plain, .grid_hub_disc, .grid_hub_line)
+rownames(param_grid) <- NULL
 
 # ── 4. Single-replicate runner ───────────────────────────────────────────────
 
@@ -251,13 +262,15 @@ param_grid <- expand.grid(
 LAG_FRACS <- c(early = 0.05, mid = 0.20, late = 0.50)
 
 .run_condition <- function(i) {
-  row        <- param_grid[i, ]
-  graph_type <- row$graph_type
-  speed      <- row$speed
-  strategy   <- row$strategy
-  has_change <- row$has_change
+  row           <- param_grid[i, ]
+  graph_type    <- row$graph_type
+  speed         <- row$speed
+  strategy      <- row$strategy
+  has_change    <- row$has_change
+  K             <- row$K
+  hub_connected <- row$hub_connected
 
-  true_graph    <- GRAPH_BUILDERS[[graph_type]](K)
+  true_graph    <- build_graph(graph_type, K, hub_connected)
   misspec_graph <- misspecify_graph(true_graph)
   scale_slow <- if (graph_type == "linear") SCALE_SLOW_CHAIN else SCALE_SLOW_STAR
   scale  <- if (speed == "fast") SCALE_FAST else scale_slow
@@ -317,11 +330,12 @@ LAG_FRACS <- c(early = 0.05, mid = 0.20, late = 0.50)
   }
 
   cond_row <- data.frame(
-    graph_type = graph_type,
-    speed      = speed,
-    strategy   = strategy,
-    has_change = has_change,
-    K          = K,
+    graph_type    = graph_type,
+    speed         = speed,
+    strategy      = strategy,
+    has_change    = has_change,
+    K             = K,
+    hub_connected = hub_connected,
     alpha      = ALPHA,
     N          = N_OBS,
     nu0        = NU0,
@@ -337,8 +351,8 @@ LAG_FRACS <- c(early = 0.05, mid = 0.20, late = 0.50)
     stringsAsFactors = FALSE
   )
 
-  message(sprintf("[%d / %d] graph=%s speed=%s strategy=%s has_change=%s",
-                  i, nrow(param_grid), graph_type, speed, strategy, has_change))
+  message(sprintf("[%d / %d] graph=%s K=%d hub_conn=%s speed=%s strategy=%s has_change=%s",
+                  i, nrow(param_grid), graph_type, K, hub_connected, speed, strategy, has_change))
   cond_row
 }
 
@@ -351,12 +365,8 @@ results <- do.call(rbind, results)
 rownames(results) <- NULL
 
 # ── 7. Save ──────────────────────────────────────────────────────────────────
+# (.pkg_root already computed above, before sourcing the shared graph builders)
 
-.pkg_root <- local({
-  d <- normalizePath(getwd())
-  while (!file.exists(file.path(d, "DESCRIPTION")) && d != dirname(d)) d <- dirname(d)
-  d
-})
 out_dir <- file.path(.pkg_root, "simulations", "output")
 if (!dir.exists(out_dir)) dir.create(out_dir, recursive = TRUE)
 write.csv(results, file.path(out_dir, "localization_graph_sim_results.csv"), row.names = FALSE)
