@@ -171,9 +171,11 @@ setMethod("update_detector", "CUSUMDetector", function(object, evidence, t, stat
 #                pi_tilde is a geometric schedule.
 #            (b) adaptive (Section 5.3) — when `proximity_graph` is set, invest_tk is
 #                recomputed every step from the graph-structured allowance gamma_tk =
-#                (1-zeta)/K + zeta * u_tk / sum(u_t), u_tk = kernel(d_G(k, A_{t-1})),
-#                A_{t-1} = streams with R_{(t-1),k} > threshold. For PFA, invest_tk =
-#                pi_tilde_t * gamma_tk using the univariate schedule in `pi_tilde`.
+#                (1-zeta)/K + zeta * u_tk / sum(u_t), u_tk = kernel(d_G(k, A_{t-1})) *
+#                1{k not in A_{t-1}} (already-active streams compete only for the
+#                uniform floor, never the zeta-bonus), A_{t-1} = streams with
+#                R_{(t-1),k} > threshold. For PFA, invest_tk = pi_tilde_t * gamma_tk
+#                using the univariate schedule in `pi_tilde`.
 # slots:
 #   K               = positive integer number of streams
 #   alpha           = numeric scalar global nominal level

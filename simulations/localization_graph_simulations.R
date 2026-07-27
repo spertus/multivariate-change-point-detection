@@ -5,25 +5,37 @@
 # K = 6 streams sit on a ProximityGraph. Under the propagation-on-a-graph
 # configuration model of Section 4.3, a change originates at a source node at
 # time nu0 and spreads outward: nu_k = nu0 + scale * d_G(source, k). We compare
-# an adaptive LocalizedDetector (Section 5.3) that spends its allowance
-# graph-informed (zeta > 0, correctly-specified kernel bandwidth) against the
-# uniform e-d-Bonferroni baseline it nests (zeta = 0), across three graph
-# topologies and fast/slow propagation, both under the global null (no change)
-# and under the propagation-configuration alternative. All detectors control
-# the global ARL to level alpha = 0.001; by Theorem 2 the same spending
-# allowance also controls the error over patience of the associated monitoring
-# rule, so no separate EOP-specific machinery is needed.
+# four spending strategies, both under the global null (no change) and under
+# the propagation-configuration alternative:
+#   oracle         — static allowance (Theorem 1) concentrating most of the
+#                    budget, from t=1, equally across the streams known (only
+#                    to the simulator) to truly change within the horizon.
+#                    Not a real procedure — an efficiency ceiling.
+#   uniform        — the uniform e-d-Bonferroni baseline (zeta = 0).
+#   graph_correct  — adaptive spending (Section 5.3) on the TRUE proximity
+#                    graph that generated the configuration.
+#   graph_misspec  — adaptive spending on a graph whose edge weights are all
+#                    scaled down by MISSPEC_FACTOR, so the detector perceives
+#                    every pair of nodes as closer than truth and reacts as if
+#                    the change propagates MISSPEC_FACTOR times faster than it
+#                    really does (overestimates the speed of propagation).
+# All detectors control the global ARL to level alpha = 0.001; by Theorem 2
+# the same spending allowance also controls the error over patience of the
+# associated monitoring rule, so no separate EOP-specific machinery is needed.
 #
 # Output columns:
-#   Condition: graph_type, speed, zeta, has_change, K, alpha, N, nu0, scale, n_rep
+#   Condition: graph_type, speed, strategy, has_change, K, alpha, N, nu0, scale, n_rep
 #   Type-I diagnostics (meaningful mainly when has_change = FALSE):
 #     ARL          = mean global stopping time (capped at N+1)
 #     frac_alarmed = empirical P(any stream alarms within the horizon)
 #   Localization / efficiency (meaningful only when has_change = TRUE):
 #     CAD_total           = mean total conditional average delay (Section 2.4):
 #                            sum over truly-changing streams of (D_k - nu_k),
-#                            averaged over reps where that stream did not fire
-#                            before its own change-point
+#                            excluding streams that falsely fired before their
+#                            own nu_k; streams never detected within the
+#                            horizon are right-censored at N (not excluded --
+#                            excluding them would reward giving up on hard
+#                            cases), mirroring the ARL censoring convention
 #     mean_frac_detected  = average fraction of truly-changing streams (those
 #                            with nu_k <= N) that were validly detected by N
 #     detect_frac_early/mid/late = fraction of truly-changing streams already
@@ -31,9 +43,10 @@
 #                            nu0 — the accumulating-detections curve
 #
 # ── Timing (measured, 8 cores via parallel::mclapply over conditions) ──────
-#   Quick mode (RUN_FULL = FALSE): ~7 sec   [N=800,  50 reps,  24 conditions]
-#   Full  mode (RUN_FULL = TRUE) : ~2.7 min [N=3000, 300 reps, 24 conditions]
-#   Grid: graph_type(3) x speed(2) x zeta(2) x has_change(2) = 24 conditions.
+#   Grid: graph_type(3) x speed(2) x strategy(4) x has_change(2) = 48 conditions.
+#   Quick mode (RUN_FULL = FALSE): N=800,  50 reps  per condition
+#   Full  mode (RUN_FULL = TRUE) : N=3000, 300 reps per condition
+#   (see console output of the most recent run for measured wall-clock time)
 # ─────────────────────────────────────────────────────────────────────────────
 
 library(multichangepoints)
@@ -55,13 +68,21 @@ NU0   <- if (RUN_FULL) 500L  else 200L
 N_REP <- if (RUN_FULL) 300L  else 50L
 
 REMAIN     <- N_OBS - NU0
-SCALE_FAST <- REMAIN / 50    # all reachable nodes change shortly after nu0 (dense)
-SCALE_SLOW <- REMAIN * 0.7   # only the source and its immediate (1-hop) neighbors
-                             # change within the horizon; 2+ hops away never change
-                             # (sparse) — the regime where graph-informed spending
-                             # helps most, since boosting a near neighbor of an
-                             # active node necessarily comes at the expense of
-                             # farther nodes that would otherwise share the budget
+SCALE_FAST <- REMAIN / 50    # all reachable nodes change shortly after nu0 (dense),
+                             # for every topology
+
+# "Slow" propagation is calibrated per topology, not globally: hub-and-spoke and
+# fully-connected have NO graded hop structure among non-source nodes -- every
+# non-source node is exactly 1 hop away, so a single scale can only put ALL of
+# them on the same side of the horizon (all-changing or none-changing), never a
+# genuine partial/sparse split. To get an actually sparse scenario for these two
+# topologies (only the source changes within the horizon -- a real efficiency
+# test for targeted spending), their slow scale is pushed past REMAIN so even
+# the 1-hop nodes fall outside it. The linear chain has graded hop distances
+# (1..K-1), so a single scale already yields a genuine partial split (source +
+# its immediate neighbor change; farther nodes don't) without needing this.
+SCALE_SLOW_STAR  <- REMAIN * 1.2   # hub-and-spoke, fully-connected: only source changes
+SCALE_SLOW_CHAIN <- REMAIN * 0.7   # linear: source + immediate (1-hop) neighbor change
 
 # Kernel bandwidth (Section 5.3) operates on raw graph distance d_G, which is
 # in hop units here (unit edge weights) — NOT on the time-propagation `scale`
@@ -105,12 +126,72 @@ pick_source <- function(graph_type, K) {
   if (graph_type == "fully_connected") sample.int(K, 1L) else 1L
 }
 
+# Focus parameter shared by both adaptive-graph strategies (correct/misspec) —
+# only the assumed graph differs between them, so zeta is held fixed for a
+# clean, single-factor comparison.
+ZETA <- 0.8
+
+# Function: oracle_allowance
+# purpose: static allowance (Theorem 1) that concentrates ORACLE_SHARE of the
+#          budget, equally, across streams known -- only to the simulator, not
+#          a real detector -- to truly change within the horizon; the rest is
+#          split equally among the remaining streams. Falls back to uniform
+#          when nothing (or everything) changes, matching the convention used
+#          throughout the package for "no information to act on".
+# inputs:
+#   nu_vec = numeric length-K vector of true change-points (Inf = never)
+#   N      = integer horizon
+#   K      = integer number of streams
+#   share  = numeric scalar in (0,1); total budget given to changing streams
+# outputs:
+#   numeric length-K allowance vector summing to 1
+ORACLE_SHARE <- 0.95
+oracle_allowance <- function(nu_vec, N, K, share = ORACLE_SHARE) {
+  changing <- which(is.finite(nu_vec) & nu_vec <= N)
+  if (length(changing) == 0L || length(changing) == K) return(rep(1 / K, K))
+  alloc <- rep((1 - share) / (K - length(changing)), K)
+  alloc[changing] <- share / length(changing)
+  alloc
+}
+
+# Function: misspecify_graph
+# purpose: scale down every edge weight of a ProximityGraph by `factor`, so
+#          d_G computed on the returned graph is `factor` times shorter than
+#          on the true graph -- the detector perceives nodes as closer than
+#          they are and reacts as if the change propagates `factor` times
+#          faster than it truly does ("overestimates the speed of propagation").
+MISSPEC_FACTOR <- 3
+misspecify_graph <- function(graph, factor = MISSPEC_FACTOR) {
+  ProximityGraph(graph@W / factor)
+}
+
+# Function: build_detector
+# purpose: construct the LocalizedDetector for one of the four spending
+#          strategies compared in this simulation (see file header).
+build_detector <- function(strategy, K, alpha, true_graph, misspec_graph, kernel,
+                           nu_vec, N) {
+  if (strategy == "oracle") {
+    LocalizedDetector(K = K, alpha = alpha, criterion = "ARL",
+                       allowance = oracle_allowance(nu_vec, N, K))
+  } else if (strategy == "uniform") {
+    LocalizedDetector(K = K, alpha = alpha, criterion = "ARL")
+  } else if (strategy == "graph_correct") {
+    LocalizedDetector(K = K, alpha = alpha, criterion = "ARL",
+                       proximity_graph = true_graph, kernel = kernel, zeta = ZETA)
+  } else if (strategy == "graph_misspec") {
+    LocalizedDetector(K = K, alpha = alpha, criterion = "ARL",
+                       proximity_graph = misspec_graph, kernel = kernel, zeta = ZETA)
+  } else {
+    stop("unknown strategy: ", strategy, call. = FALSE)
+  }
+}
+
 # ── 3. Parameter grid ────────────────────────────────────────────────────────
 
 param_grid <- expand.grid(
   graph_type = names(GRAPH_BUILDERS),
   speed      = c("fast", "slow"),
-  zeta       = c(0, 0.8),
+  strategy   = c("oracle", "uniform", "graph_correct", "graph_misspec"),
   has_change = c(TRUE, FALSE),
   stringsAsFactors = FALSE
 )
@@ -139,11 +220,12 @@ param_grid <- expand.grid(
 }
 
 # Runs one replicate: simulate data under the propagation configuration,
-# compute per-stream BoundedModel/EWMABet log-increments, run one adaptive
-# LocalizedDetector, and return the per-stream stopping times and statistic
-# paths needed for the condition-level summary metrics.
-.run_rep_localization <- function(N, K, graph, kernel, zeta, alpha,
-                                  nu_vec, mu0, mu1, sigma) {
+# compute per-stream BoundedModel/EWMABet log-increments, run one
+# LocalizedDetector under the requested strategy, and return the per-stream
+# stopping times and statistic paths needed for the condition-level summary
+# metrics.
+.run_rep_localization <- function(N, K, strategy, true_graph, misspec_graph, kernel,
+                                  alpha, nu_vec, mu0, mu1, sigma) {
   x <- .simulate_streams_propagation(N, K, nu_vec, mu0, mu1, sigma)
 
   inc_mat <- matrix(NA_real_, nrow = N, ncol = K)
@@ -152,8 +234,7 @@ param_grid <- expand.grid(
     inc_mat[, k] <- compute_increments(TSM(bm_k), x[, k], log = TRUE)
   }
 
-  ld  <- LocalizedDetector(K = K, alpha = alpha, criterion = "ARL",
-                            proximity_graph = graph, kernel = kernel, zeta = zeta)
+  ld  <- build_detector(strategy, K, alpha, true_graph, misspec_graph, kernel, nu_vec, N)
   out <- run_detector(ld, inc_mat, log = TRUE)
 
   stream_stops <- vapply(out$stream_results, function(r) r$stopping_time, numeric(1))
@@ -173,11 +254,13 @@ LAG_FRACS <- c(early = 0.05, mid = 0.20, late = 0.50)
   row        <- param_grid[i, ]
   graph_type <- row$graph_type
   speed      <- row$speed
-  zeta       <- row$zeta
+  strategy   <- row$strategy
   has_change <- row$has_change
 
-  graph <- GRAPH_BUILDERS[[graph_type]](K)
-  scale <- if (speed == "fast") SCALE_FAST else SCALE_SLOW
+  true_graph    <- GRAPH_BUILDERS[[graph_type]](K)
+  misspec_graph <- misspecify_graph(true_graph)
+  scale_slow <- if (graph_type == "linear") SCALE_SLOW_CHAIN else SCALE_SLOW_STAR
+  scale  <- if (speed == "fast") SCALE_FAST else scale_slow
   kernel <- exponential_kernel(xi = KERNEL_XI)
   lag_checkpoints <- NU0 + round(LAG_FRACS * REMAIN)
   log_thresh <- log(1 / ALPHA)   # stat_mat is on the log scale (.run_rep_localization
@@ -192,11 +275,12 @@ LAG_FRACS <- c(early = 0.05, mid = 0.20, late = 0.50)
   for (r in seq_len(N_REP)) {
     set.seed(30000L * i + r)
     source <- pick_source(graph_type, K)
-    nu_vec <- if (has_change) propagation_nu(graph, source, NU0, scale) else rep(Inf, K)
+    nu_vec <- if (has_change) propagation_nu(true_graph, source, NU0, scale) else rep(Inf, K)
 
     rep_out <- tryCatch(
-      .run_rep_localization(N = N_OBS, K = K, graph = graph, kernel = kernel,
-                            zeta = zeta, alpha = ALPHA, nu_vec = nu_vec,
+      .run_rep_localization(N = N_OBS, K = K, strategy = strategy,
+                            true_graph = true_graph, misspec_graph = misspec_graph,
+                            kernel = kernel, alpha = ALPHA, nu_vec = nu_vec,
                             mu0 = MU_PRE, mu1 = MU_PRE + DELTA, sigma = SIGMA_INN),
       error = function(e) NULL
     )
@@ -212,9 +296,17 @@ LAG_FRACS <- c(early = 0.05, mid = 0.20, late = 0.50)
 
     changing <- which(is.finite(nu_vec) & nu_vec <= N_OBS)
     if (length(changing) > 0L) {
-      valid <- stops[changing] >= nu_vec[changing] & stops[changing] <= N_OBS
-      cad_totals[r]    <- sum((stops[changing] - nu_vec[changing])[valid])
-      frac_detected[r] <- mean(valid)
+      # A stream "counts" toward CAD unless it fired before its own change-point
+      # (an invalid detection, per Section 2.4's CAD_k definition); streams that
+      # never fire within the horizon are NOT excluded -- excluding them would
+      # reward a strategy for silently giving up on hard-to-detect streams
+      # (survivorship bias). Instead their delay is right-censored at N_OBS,
+      # the same conservative lower-bound convention already used for ARL
+      # (mean(pmin(stop_times, N+1))) elsewhere in this codebase.
+      not_false_alarm <- stops[changing] >= nu_vec[changing]
+      censored_delay  <- pmin(stops[changing], N_OBS) - nu_vec[changing]
+      cad_totals[r]    <- sum(censored_delay[not_false_alarm])
+      frac_detected[r] <- mean(stops[changing] <= N_OBS & not_false_alarm)
 
       for (j in seq_along(LAG_FRACS)) {
         t_check <- min(lag_checkpoints[j], N_OBS)
@@ -227,7 +319,7 @@ LAG_FRACS <- c(early = 0.05, mid = 0.20, late = 0.50)
   cond_row <- data.frame(
     graph_type = graph_type,
     speed      = speed,
-    zeta       = zeta,
+    strategy   = strategy,
     has_change = has_change,
     K          = K,
     alpha      = ALPHA,
@@ -245,8 +337,8 @@ LAG_FRACS <- c(early = 0.05, mid = 0.20, late = 0.50)
     stringsAsFactors = FALSE
   )
 
-  message(sprintf("[%d / %d] graph=%s speed=%s zeta=%.1f has_change=%s",
-                  i, nrow(param_grid), graph_type, speed, zeta, has_change))
+  message(sprintf("[%d / %d] graph=%s speed=%s strategy=%s has_change=%s",
+                  i, nrow(param_grid), graph_type, speed, strategy, has_change))
   cond_row
 }
 

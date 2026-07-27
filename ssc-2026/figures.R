@@ -1383,3 +1383,123 @@ ggsave(file.path(sim_dir_cad, "bounded_nu_cad.png"),
 
 message("Wrote nu-sensitivity figure (11c).")
 } # end nu_csv block
+
+# ======================================================================
+# 12. Graph-structured localization simulation results
+#     Reads simulations/output/localization_graph_sim_results.csv
+#     (produced by simulations/localization_graph_simulations.R)
+#     Saves to figures/simulations/localization/
+# ======================================================================
+sim_dir_loc <- "figures/simulations/localization"
+if (!dir.exists(sim_dir_loc)) dir.create(sim_dir_loc, recursive = TRUE)
+
+loc_graph_csv <- file.path(PKG_DIR, "simulations", "output",
+                           "localization_graph_sim_results.csv")
+
+if (!file.exists(loc_graph_csv)) {
+  message("localization_graph_sim_results.csv not found — skipping section 12.",
+          "\nRun simulations/localization_graph_simulations.R first.")
+} else {
+
+loc_graph_raw <- read.csv(loc_graph_csv, stringsAsFactors = FALSE)
+
+graph_levels <- c("hub_spoke", "fully_connected", "linear")
+graph_labels <- c("Hub-and-spoke", "Fully connected", "Linear chain")
+
+strategy_levels <- c("oracle", "graph_correct", "graph_misspec", "uniform")
+strategy_labels <- c("Oracle (static, fixed)", "Graph-adaptive (correct)",
+                     "Graph-adaptive (mis-specified)", "Uniform (Bonferroni)")
+
+loc_graph <- loc_graph_raw %>%
+  mutate(
+    graph_label    = factor(graph_type, levels = graph_levels, labels = graph_labels),
+    speed_label    = factor(speed, levels = c("fast", "slow"),
+                            labels = c("Fast propagation", "Slow propagation")),
+    strategy_label = factor(strategy, levels = strategy_levels, labels = strategy_labels)
+  )
+
+strategy_pal <- setNames(
+  c("#1a9641", "#457b9d", "#e07020", "#a6a6a6"),
+  strategy_labels
+)
+
+alpha_used  <- unique(loc_graph$alpha)
+thresh_used <- 1 / alpha_used
+
+# ── Fig 12a: total conditional average delay, by graph / speed / strategy ────
+loc_change <- loc_graph %>% filter(has_change)
+
+p12a <- ggplot(loc_change, aes(graph_label, CAD_total, fill = strategy_label)) +
+  geom_col(position = position_dodge(width = 0.8), width = 0.7) +
+  scale_fill_manual(values = strategy_pal, name = NULL) +
+  facet_wrap(~ speed_label) +
+  labs(
+    title    = "Total conditional average delay under four spending strategies",
+    subtitle = expression(
+      "Change propagates along the proximity graph (Section 4.3); K = 6, " *
+      alpha * " = 0.001"),
+    x = NULL, y = "CAD (summed over truly-changing streams)"
+  ) +
+  theme_talk +
+  theme(legend.position = "bottom", axis.text.x = element_text(angle = 15, hjust = 1))
+
+ggsave(file.path(sim_dir_loc, "graph_cad_total.png"),
+       p12a, width = 9.5, height = 4.8, dpi = 220)
+
+# ── Fig 12b: accumulating detections over time since the outbreak began ──────
+detect_long <- loc_change %>%
+  select(graph_label, speed_label, strategy_label,
+         detect_frac_early, detect_frac_mid, detect_frac_late) %>%
+  pivot_longer(starts_with("detect_frac"),
+               names_to = "checkpoint", values_to = "detect_frac") %>%
+  mutate(checkpoint = factor(checkpoint,
+                             levels = c("detect_frac_early", "detect_frac_mid",
+                                        "detect_frac_late"),
+                             labels = c("early", "mid", "late")))
+
+p12b <- ggplot(detect_long,
+               aes(checkpoint, detect_frac, colour = strategy_label,
+                   group = strategy_label)) +
+  geom_line(linewidth = 0.8) +
+  geom_point(size = 2.0) +
+  scale_colour_manual(values = strategy_pal, name = NULL) +
+  scale_y_continuous(limits = c(0, 1)) +
+  facet_grid(graph_label ~ speed_label) +
+  labs(
+    title    = "Accumulating detections after the outbreak begins",
+    subtitle = "Fraction of truly-changing streams already flagged, by checkpoint since nu0",
+    x = "checkpoint since nu0", y = "fraction of changing streams detected"
+  ) +
+  theme_talk +
+  theme(legend.position = "bottom", strip.text.y = element_text(angle = 0),
+        strip.text = element_text(face = "bold"))
+
+ggsave(file.path(sim_dir_loc, "graph_detection_curve.png"),
+       p12b, width = 9, height = 7.5, dpi = 220)
+
+# ── Fig 12c: Type-I diagnostics under the global null ─────────────────────────
+loc_null <- loc_graph %>% filter(!has_change)
+
+p12c_arl <- ggplot(loc_null, aes(graph_label, ARL, fill = strategy_label)) +
+  geom_col(position = position_dodge(width = 0.8), width = 0.7) +
+  geom_hline(yintercept = thresh_used, linetype = "dotted",
+             colour = "grey20", linewidth = 0.7) +
+  annotate("text", x = 0.6, y = thresh_used * 1.08, label = "1/alpha",
+           parse = TRUE, hjust = 0, size = 3.2, colour = "grey20") +
+  scale_fill_manual(values = strategy_pal, name = NULL) +
+  facet_wrap(~ speed_label) +
+  labs(
+    title    = "Global ARL under the null (no change)",
+    subtitle = expression(
+      "Horizon-censored empirical mean (a lower bound on the true ARL); K = 6, " *
+      alpha * " = 0.001"),
+    x = NULL, y = "ARL (censored at N + 1)"
+  ) +
+  theme_talk +
+  theme(legend.position = "bottom", axis.text.x = element_text(angle = 15, hjust = 1))
+
+ggsave(file.path(sim_dir_loc, "graph_type1_arl.png"),
+       p12c_arl, width = 9.5, height = 4.8, dpi = 220)
+
+message("Wrote figures/simulations/localization/ (3 graph-localization figures).")
+} # end loc_graph_csv block
