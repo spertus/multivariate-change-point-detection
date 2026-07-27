@@ -4,10 +4,11 @@
 # (ssc-2026/figures.R). Pure function definitions only, no top-level
 # execution -- safe to source() from either place without side effects.
 #
-# Three topologies, each usable at any K:
-#   linear          -- a path 1--2--...--K
-#   fully_connected -- every pair of nodes adjacent
-#   hub_spoke       -- one or more "star" clusters (see hub_spoke_graph below)
+# Four topologies, each usable at any K:
+#   linear           -- a path 1--2--...--K
+#   fully_connected  -- every pair of nodes adjacent
+#   hub_spoke        -- one or more "star" clusters (see hub_spoke_graph below)
+#   clustered_linear -- n_chains disconnected linear chains (see below)
 # All edge weights are unit.
 
 # Function: multi_hub_graph
@@ -78,12 +79,38 @@ linear_graph <- function(K) {
   ProximityGraph(W)
 }
 
+# Function: clustered_linear_graph
+# purpose: n_chains disconnected linear chains of equal length (K / n_chains
+#          each). Chain c occupies consecutive node indices: chain 1 is nodes
+#          1..L, chain 2 is L+1..2L, etc. (L = K / n_chains); no edges between
+#          chains. The chain analogue of hub_spoke's "disconnected" clusters:
+#          a change starting in chain 1 can propagate along that chain but can
+#          never reach the other n_chains - 1 chains.
+# inputs:
+#   K        = integer graph size, must be divisible by n_chains
+#   n_chains = positive integer number of disconnected chains
+# outputs:
+#   ProximityGraph
+clustered_linear_graph <- function(K, n_chains = 4L) {
+  if (K %% n_chains != 0L) stop("K must be divisible by n_chains.", call. = FALSE)
+  L <- K %/% n_chains
+  W <- matrix(0, K, K)
+  for (c in seq_len(n_chains)) {
+    offset <- (c - 1L) * L
+    for (k in seq_len(L - 1L)) {
+      i <- offset + k; j <- offset + k + 1L
+      W[i, j] <- W[j, i] <- 1
+    }
+  }
+  ProximityGraph(W)
+}
+
 # Function: build_graph
 # purpose: single dispatch point used by both the simulation and its figures,
 #          so the graphs actually simulated and the graphs drawn can never
 #          drift apart.
 # inputs:
-#   graph_type    = "hub_spoke" | "fully_connected" | "linear"
+#   graph_type    = "hub_spoke" | "fully_connected" | "linear" | "clustered_linear"
 #   K             = integer graph size (6 or 24)
 #   hub_connected = "disconnected" | "line"; only consulted for
 #                   graph_type == "hub_spoke" and K == 24 (ignored otherwise)
@@ -91,19 +118,20 @@ linear_graph <- function(K) {
 #   ProximityGraph
 build_graph <- function(graph_type, K, hub_connected = "disconnected") {
   switch(graph_type,
-        hub_spoke       = hub_spoke_graph(K, hub_connected),
-        fully_connected = fully_connected_graph(K),
-        linear          = linear_graph(K),
+        hub_spoke        = hub_spoke_graph(K, hub_connected),
+        fully_connected  = fully_connected_graph(K),
+        linear           = linear_graph(K),
+        clustered_linear = clustered_linear_graph(K),
         stop("unknown graph_type: ", graph_type, call. = FALSE))
 }
 
 # Function: pick_source
-# purpose: source node for the propagation model (Section 4.3).
-#          hub_spoke       -- hub 1 (fixed): the sole hub at K=6, the first
-#                             of the 4 hubs at K=24.
-#          linear          -- node 1 (fixed, one end of the chain)
-#          fully_connected -- uniformly random each replicate (no fixed
-#                             "center" node to prefer)
+# purpose: source node for the propagation model (Section 4.3). The source is
+#          never fixed to a particular node -- at the moment it is chosen, no
+#          node has yet changed, so it is drawn uniformly at random from all K
+#          nodes for every topology (hub, spoke, chain end, or otherwise).
+#          graph_type is accepted for interface symmetry with build_graph()
+#          but does not affect the draw.
 pick_source <- function(graph_type, K) {
-  if (graph_type == "fully_connected") sample.int(K, 1L) else 1L
+  sample.int(K, 1L)
 }

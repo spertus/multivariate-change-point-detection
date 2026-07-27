@@ -2,9 +2,9 @@
 # Simulation study for graph-structured localization (Sections 4.3, 5.3 of
 # Spertus et al. 2026).
 #
-# K in {6, 24} streams sit on a ProximityGraph (topologies defined in the
-# sourced localization_graph_builders.R, shared with the figures so the
-# graphs simulated and the graphs drawn can never drift apart). Under the
+# K = 24 streams sit on a ProximityGraph (topologies defined in the sourced
+# localization_graph_builders.R, shared with the figures so the graphs
+# simulated and the graphs drawn can never drift apart). Under the
 # propagation-on-a-graph configuration model of Section 4.3, a change
 # originates at a source node at time nu0 and spreads outward:
 # nu_k = nu0 + scale * d_G(source, k). We compare four spending strategies,
@@ -26,16 +26,19 @@
 # the same spending allowance also controls the error over patience of the
 # associated monitoring rule, so no separate EOP-specific machinery is needed.
 #
-# Graph sizes: K = 6 (as before) and K = 24. hub_spoke scales structurally,
-# not just numerically: at K = 6 it is a single hub + 5 spokes; at K = 24 it
-# becomes 4 hubs x 5 spokes each (multi_hub_graph in the sourced builders
-# file), with the hubs themselves either disconnected (4 separate star
-# components -- a clustered-dependency-graph scenario where change can only
-# ever reach one cluster) or chained in a line (hub_1--hub_2--hub_3--hub_4,
-# through which change can eventually reach every cluster). This
-# hub_connected factor only applies to (graph_type == "hub_spoke", K == 24);
-# it is fixed at "n/a" everywhere else. linear and fully_connected scale to
-# K = 24 with no structural change (just more nodes/edges).
+# Four topologies at K = 24:
+#   hub_spoke        -- 4 hubs x 5 spokes each (multi_hub_graph in the sourced
+#                        builders file), hubs either disconnected (4 separate
+#                        star components -- change can only ever reach one
+#                        cluster) or chained in a line (hub_1--hub_2--hub_3--
+#                        hub_4, through which change can eventually reach
+#                        every cluster). This hub_connected factor only
+#                        applies to graph_type == "hub_spoke"; it is fixed at
+#                        "n/a" for the other three topologies.
+#   fully_connected  -- every pair of nodes adjacent
+#   linear           -- a single 24-node chain
+#   clustered_linear -- 4 disconnected 6-node chains (the chain analogue of
+#                        hub_spoke's disconnected clusters)
 #
 # Output columns:
 #   Condition: graph_type, speed, strategy, has_change, K, hub_connected,
@@ -58,8 +61,8 @@
 #                            nu0 — the accumulating-detections curve
 #
 # ── Timing (measured, 8 cores via parallel::mclapply over conditions) ──────
-#   Grid: graph_type(3) x speed(2) x strategy(4) x has_change(2) x K(2), with
-#   hub_spoke x K=24 additionally split by hub_connected(2) = 112 conditions.
+#   Grid: graph_type(4) x speed(2) x strategy(4) x has_change(2), with
+#   hub_spoke additionally split by hub_connected(2) = 80 conditions.
 #   Quick mode (RUN_FULL = FALSE): N=800,  50 reps  per condition
 #   Full  mode (RUN_FULL = TRUE) : N=3000, 300 reps per condition
 #   (see console output of the most recent run for measured wall-clock time)
@@ -95,18 +98,23 @@ REMAIN     <- N_OBS - NU0
 SCALE_FAST <- REMAIN / 50    # all reachable nodes change shortly after nu0 (dense),
                              # for every topology
 
-# "Slow" propagation is calibrated per topology, not globally: hub-and-spoke and
-# fully-connected have NO graded hop structure among non-source nodes -- every
-# non-source node is exactly 1 hop away, so a single scale can only put ALL of
-# them on the same side of the horizon (all-changing or none-changing), never a
-# genuine partial/sparse split. To get an actually sparse scenario for these two
-# topologies (only the source changes within the horizon -- a real efficiency
-# test for targeted spending), their slow scale is pushed past REMAIN so even
-# the 1-hop nodes fall outside it. The linear chain has graded hop distances
-# (1..K-1), so a single scale already yields a genuine partial split (source +
-# its immediate neighbor change; farther nodes don't) without needing this.
-SCALE_SLOW_STAR  <- REMAIN * 1.2   # hub-and-spoke, fully-connected: only source changes
-SCALE_SLOW_CHAIN <- REMAIN * 0.7   # linear: source + immediate (1-hop) neighbor change
+# "Slow" propagation uses ONE scale for every topology: enough to reach 1 hop
+# within the horizon but not 2 (scale in (REMAIN/2, REMAIN]). This is a
+# deliberate, load-bearing choice, not just a simplification -- graph-informed
+# spending can only ever help when there is a genuine "changing but not yet
+# fired" neighbor to redirect the budget toward, and whether that neighbor
+# exists depends on the topology, not the scale:
+#   - fully_connected: every non-source node is *always* exactly 1 hop from
+#     every other, so there is never a near/far distinction to exploit,
+#     regardless of scale -- a structural (not calibration) negative control.
+#   - hub_spoke, linear, clustered_linear: reaching 1 hop activates a genuine
+#     "near neighbor(s) vs. permanently unreached/farther nodes" contrast
+#     (hub_spoke: the source's own spokes and, if hub-connected, the next
+#     hub; linear/clustered_linear: the source's one or two chain-neighbors,
+#     depending on whether the randomly drawn source lands on a chain end or
+#     an interior node), which is exactly the regime graph-informed spending
+#     is designed to exploit.
+SCALE_SLOW <- REMAIN * 0.7
 
 # Kernel bandwidth (Section 5.3) operates on raw graph distance d_G, which is
 # in hop units here (unit edge weights) — NOT on the time-propagation `scale`
@@ -183,24 +191,25 @@ build_detector <- function(strategy, K, alpha, true_graph, misspec_graph, kernel
 
 # ── 3. Parameter grid ────────────────────────────────────────────────────────
 
-# hub_connected only applies to (graph_type == "hub_spoke", K == 24); it is
-# fixed at "n/a" everywhere else rather than needlessly duplicating every
-# other condition across a factor that has no effect on it.
+# hub_connected only applies to graph_type == "hub_spoke"; it is fixed at
+# "n/a" everywhere else rather than needlessly duplicating every other
+# condition across a factor that has no effect on it.
+K <- 24L
+
 .base_grid <- expand.grid(
-  graph_type = c("hub_spoke", "fully_connected", "linear"),
+  graph_type = c("hub_spoke", "fully_connected", "linear", "clustered_linear"),
   speed      = c("fast", "slow"),
   strategy   = c("oracle", "uniform", "graph_correct", "graph_misspec"),
   has_change = c(TRUE, FALSE),
-  K          = c(6L, 24L),
   stringsAsFactors = FALSE
 )
 
-.is_multi_hub <- .base_grid$graph_type == "hub_spoke" & .base_grid$K == 24L
+.is_hub <- .base_grid$graph_type == "hub_spoke"
 
-.grid_plain <- .base_grid[!.is_multi_hub, ]
+.grid_plain <- .base_grid[!.is_hub, ]
 .grid_plain$hub_connected <- "n/a"
 
-.grid_hub <- .base_grid[.is_multi_hub, ]
+.grid_hub <- .base_grid[.is_hub, ]
 .grid_hub_disc <- .grid_hub; .grid_hub_disc$hub_connected <- "disconnected"
 .grid_hub_line <- .grid_hub; .grid_hub_line$hub_connected <- "line"
 
@@ -267,13 +276,11 @@ LAG_FRACS <- c(early = 0.05, mid = 0.20, late = 0.50)
   speed         <- row$speed
   strategy      <- row$strategy
   has_change    <- row$has_change
-  K             <- row$K
   hub_connected <- row$hub_connected
 
   true_graph    <- build_graph(graph_type, K, hub_connected)
   misspec_graph <- misspecify_graph(true_graph)
-  scale_slow <- if (graph_type == "linear") SCALE_SLOW_CHAIN else SCALE_SLOW_STAR
-  scale  <- if (speed == "fast") SCALE_FAST else scale_slow
+  scale  <- if (speed == "fast") SCALE_FAST else SCALE_SLOW
   kernel <- exponential_kernel(xi = KERNEL_XI)
   lag_checkpoints <- NU0 + round(LAG_FRACS * REMAIN)
   log_thresh <- log(1 / ALPHA)   # stat_mat is on the log scale (.run_rep_localization
