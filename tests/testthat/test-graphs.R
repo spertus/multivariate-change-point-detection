@@ -151,7 +151,9 @@ test_that("proximity_allowance: all-zero kernel weights fall back to uniform 1/K
 })
 
 test_that("proximity_allowance: worked example on a 3-node chain matches hand computation", {
-  # Chain 1-2-3, unit weights: D[1,]=c(0,1,2), active={1}, kernel=exp(-d)
+  # Chain 1-2-3, unit weights: D[1,]=c(0,1,2), active={1}, kernel=exp(-d).
+  # Node 1 is already active, so it competes only for the uniform floor
+  # (1-zeta)/3; the entire zeta-bonus goes to nodes 2 and 3 by distance to 1.
   W <- matrix(0, 3, 3)
   W[1, 2] <- W[2, 1] <- 1
   W[2, 3] <- W[3, 2] <- 1
@@ -161,14 +163,16 @@ test_that("proximity_allowance: worked example on a 3-node chain matches hand co
 
   d_to_active <- c(0, 1, 2)          # distance of each node to node 1
   u <- exp(-d_to_active)
+  u[1] <- 0                          # node 1 is active: excluded from the bonus
   expected <- (1 - zeta) / 3 + zeta * u / sum(u)
 
   out <- proximity_allowance(g, active = c(1), kernel = k, zeta = zeta)
   expect_equal(out, expected)
   expect_equal(sum(out), 1)
-  # node 1 (active itself, distance 0) gets the largest share
-  expect_true(out[1] > out[2])
+  # node 2 (closest non-active neighbor) gets the largest share; node 1
+  # (active, baseline only) gets less than node 3 (farther, but still competing)
   expect_true(out[2] > out[3])
+  expect_true(out[3] > out[1])
 })
 
 # ---- propagation_nu (Section 4.3) ----------------------------------------------

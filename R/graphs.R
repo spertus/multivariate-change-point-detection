@@ -207,15 +207,22 @@ hard_cutoff_kernel <- function(r) {
   if (length(active) == 0L) return(rep(1 / K, K))
   d_to_active <- unname(apply(dist_mat[, active, drop = FALSE], 1, min))
   u <- unname(kernel(d_to_active))
+  # An already-active node's own distance to A_{t-1} is 0 (the kernel's maximum),
+  # so without this it would keep absorbing the largest share of the zeta-bonus
+  # forever after firing -- budget better spent on not-yet-detected neighbors.
+  u[active] <- 0
   if (sum(u) <= 0) return(rep(1 / K, K))
   (1 - zeta) / K + zeta * u / sum(u)
 }
 
 # Function: proximity_allowance
 # purpose: compute the graph-structured spending allowance gamma_t (Section 5.3):
-#            gamma_tk = (1 - zeta)/K + zeta * u_tk / sum(u_t),  u_tk = kappa(d_G(k, active))
-#          with the convention gamma_tk = 1/K when `active` is empty or every kernel
-#          weight is zero.
+#            gamma_tk = (1 - zeta)/K + zeta * u_tk / sum(u_t),
+#            u_tk = kappa(d_G(k, active)) * 1{k not in active}
+#          Already-active nodes compete only for the uniform floor (1-zeta)/K; the
+#          entire zeta-controlled bonus is redirected to not-yet-detected nodes by
+#          distance to the active set. Convention: gamma_tk = 1/K when `active` is
+#          empty, every node is active, or every kernel weight is zero.
 # inputs:
 #   graph  = ProximityGraph object
 #   active = integer vector of currently-active (alarmed) node indices

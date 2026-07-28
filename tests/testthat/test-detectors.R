@@ -283,9 +283,13 @@ test_that("LocalizedDetector adaptive: zeta = 0 reproduces uniform-Bonferroni st
 test_that("LocalizedDetector adaptive: allowance reallocates toward the graph-neighbor of an alarmed stream", {
   # Chain 1-2-3, unit weights. Stream 1 (evidence=5) alarms at t=2 under alpha=0.5
   # (threshold=2): R_1(1) = 5*(0+1/3) = 5/3 < 2; R_1(2) = 5*(5/3+1/3) = 10 >= 2.
-  # From t=3 onward, active={1}, so gamma_2 > gamma_3 (node 2 is closer to node 1)
-  # at every step. Streams 2 and 3 share identical evidence, so their statistics
-  # must diverge in favor of stream 2 from t=3 onward.
+  # From t=3 onward, active={1}. Already-active streams compete only for the
+  # uniform floor (1-zeta)/K, so the entire zeta-bonus goes to non-active nodes
+  # by distance to node 1: gamma_2 > gamma_3 (node 2 is closer). Streams 2 and 3
+  # share identical evidence, so stream 2 must be detected strictly sooner.
+  # (Their raw statistics diverge in favor of stream 2 only until stream 2 itself
+  # fires and stops competing for the bonus -- stopping time, not the whole path,
+  # is the robust comparison here.)
   K <- 3; n <- 8; alpha <- 0.5
   ev <- cbind(rep(5, n), rep(1.02, n), rep(1.02, n))
 
@@ -301,8 +305,9 @@ test_that("LocalizedDetector adaptive: allowance reallocates toward the graph-ne
   expect_equal(out$stream_results$stream_1$stopping_time, 2)
   s2 <- out$stream_results$stream_2$statistic
   s3 <- out$stream_results$stream_3$statistic
-  expect_equal(s2[1:2], s3[1:2])       # identical while allowance is still uniform
-  expect_true(all(s2[3:n] > s3[3:n]))  # diverge once node 1 is active
+  expect_equal(s2[1:2], s3[1:2])   # identical while allowance is still uniform
+  expect_true(out$stream_results$stream_2$stopping_time <
+                out$stream_results$stream_3$stopping_time)
 })
 
 test_that("LocalizedDetector adaptive: constructor requires a kernel", {
@@ -364,6 +369,68 @@ test_that("LocalizedDetector adaptive: PFA with graph-structured spending is PFA
   out <- run_detector(ld, evidence = ev)
   expect_true(is.list(out$stream_results))
   expect_equal(length(out$stream_results), K)
+})
+
+# ---- Efficiency of allowance alignment (Remark, Section 5.3: "targeting is
+# rewarded") -------------------------------------------------------------------
+#
+# Isolates the basic mechanism from any reactive/graph machinery: a *static*
+# allowance that is known in advance to favor the stream that actually changes
+# should detect that stream faster than the uniform (e-d-Bonferroni) allowance.
+# Because both detectors are run on the *same* simulated evidence path (paired
+# comparison), this is provable pathwise, not just in expectation: at every t,
+# R_tk = Lambda_tk * (R_{t-1,k} + gamma_tk) is non-decreasing in gamma_tk given
+# the same Lambda path and the same (non-negative) starting state, so a larger
+# constant allowance can only weakly speed up (never slow down) stream 1's own
+# first-crossing time.
+
+test_that("LocalizedDetector: allowance aligned with the true change gains real efficiency over uniform", {
+  K <- 5L; N <- 400L; nu <- 50L; alpha <- 0.01; mean_post <- 1
+  n_rep <- 200L
+
+  allowance_uniform <- rep(1 / K, K)
+  allowance_aligned <- c(0.6, rep(0.4 / (K - 1), K - 1))   # stream 1 is the one that changes
+
+  ld_uniform <- LocalizedDetector(K = K, alpha = alpha, criterion = "ARL",
+                                   allowance = allowance_uniform)
+  ld_aligned <- LocalizedDetector(K = K, alpha = alpha, criterion = "ARL",
+                                   allowance = allowance_aligned)
+
+  models <- lapply(seq_len(K), function(k)
+    GaussianModel(mean_pre = 0, sd_pre = 1,
+                  mean_post = if (k == 1) mean_post else 0, sd_post = 1))
+
+  set.seed(2026)
+  delay_uniform <- numeric(n_rep)
+  delay_aligned <- numeric(n_rep)
+
+  for (r in seq_len(n_rep)) {
+    x <- matrix(rnorm(N * K), N, K)
+    x[(nu + 1):N, 1] <- x[(nu + 1):N, 1] + mean_post   # stream 1 changes at nu; rest stay null
+
+    inc <- sapply(seq_len(K), function(k)
+      compute_increments(TSM(models[[k]]), x[, k], log = TRUE))
+
+    out_u <- run_detector(ld_uniform, inc, log = TRUE)
+    out_a <- run_detector(ld_aligned, inc, log = TRUE)
+
+    d_u <- out_u$stream_results$stream_1$stopping_time
+    d_a <- out_a$stream_results$stream_1$stopping_time
+
+    delay_uniform[r] <- if (is.finite(d_u) && d_u >= nu) d_u - nu else NA_real_
+    delay_aligned[r] <- if (is.finite(d_a) && d_a >= nu) d_a - nu else NA_real_
+  }
+
+  both_valid <- !is.na(delay_uniform) & !is.na(delay_aligned)
+  expect_true(mean(both_valid) > 0.7)   # detection should be reliable at this SNR
+
+  # Pathwise guarantee: same data, larger constant allowance never arrives later.
+  expect_true(all(delay_aligned[both_valid] <= delay_uniform[both_valid]))
+
+  # A real (not negligible) efficiency gain on average, not just a tie.
+  mean_u <- mean(delay_uniform, na.rm = TRUE)
+  mean_a <- mean(delay_aligned, na.rm = TRUE)
+  expect_true(mean_a < mean_u * 0.9)   # at least a 10% reduction in mean delay
 })
 
 # ---- run_sr_per_clock tests -------------------------------------------------
