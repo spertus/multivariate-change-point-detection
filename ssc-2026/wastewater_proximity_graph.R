@@ -220,19 +220,15 @@ p <- ggplot() +
               aes(x = x, y = y, xend = xend, yend = yend,
                   alpha = 1 / dist_km, linewidth = 1 / dist_km),
               colour = "#2E86AB") +
-  scale_alpha_continuous(range = c(0.05, 0.85), guide = "none") +
-  scale_linewidth_continuous(range = c(0.15, 1.3), guide = "none") +
+  scale_alpha_continuous(range = c(0.18, 0.9), guide = "none") +
+  scale_linewidth_continuous(range = c(0.35, 1.6), guide = "none") +
   geom_point(data = site_geo, aes(x = x, y = y),
             colour = "#c0392b", size = 2.6, alpha = 0.9) +
   geom_text_repel(data = site_geo, aes(x = x, y = y, label = label),
                   size = 3.0, colour = "gray20", segment.size = 0.2,
                   max.overlaps = 20, seed = 1) +
   coord_sf(crs = lcc_crs) +
-  labs(
-    title = "Proximity graph on the K = 13 NWMP pipeline sites",
-    subtitle = "Fully connected; edge weight = great-circle distance (km); darker/thicker = closer",
-    caption = "Site coordinates: city centroid (world.cities) or manual override for metro-area facilities;\nsame-city facility pairs jittered apart for display only."
-  ) +
+  
   theme_map() +
   theme(
     plot.title      = element_text(face = "bold", margin = margin(b = 4)),
