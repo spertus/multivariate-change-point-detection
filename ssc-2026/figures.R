@@ -1422,8 +1422,8 @@ strategy_pal <- setNames(c("#1a9641", "#457b9d", "#e07020", "#a6a6a6"), strategy
 
 graph_levels <- c("hub_spoke_disc", "hub_spoke_line", "fully_connected",
                   "linear", "clustered_linear")
-graph_labels <- c("Hub-spoke (disconnected)", "Hub-spoke (line)",
-                  "Fully connected", "Linear chain", "Clustered linear")
+graph_labels <- c("Hub-and-spoke: disconnected", "Hub-and-spoke: line",
+                  "Fully connected", "Single chain", "Clustered chains")
 
 loc_graph <- loc_graph_raw %>%
   mutate(
@@ -1441,25 +1441,25 @@ loc_graph <- loc_graph_raw %>%
 alpha_used  <- unique(loc_graph$alpha)
 thresh_used <- 1 / alpha_used
 
-# ── Fig 12a: total conditional average delay, by graph / strategy (slow
-#            propagation only -- the sparse regime where targeted spending
-#            actually has something to show; fast/dense collapses the four
-#            strategies together and mostly just added visual clutter) ─────
-df_cad <- loc_graph %>% filter(has_change, speed_label == "Slow propagation")
+# ── Fig 12a: total conditional average delay, by graph / strategy, faceted
+#            by propagation speed (fast/dense collapses the four strategies
+#            together, but is still worth showing alongside slow/sparse for
+#            contrast) ────────────────────────────────────────────────────
+df_cad <- loc_graph %>% filter(has_change)
 p12a <- ggplot(df_cad, aes(graph_label, CAD_total, fill = strategy_label)) +
   geom_col(position = position_dodge(width = 0.8), width = 0.7) +
   scale_fill_manual(values = strategy_pal, name = NULL) +
+  facet_wrap(~ speed_label) +
   labs(
     title    = "Total conditional average delay under four spending strategies (K = 24)",
     subtitle = expression(
-      "Change propagates along the proximity graph (Section 4.3), slow propagation; " *
-      alpha * " = 0.001"),
+      "Change propagates along the proximity graph (Section 4.3); " * alpha * " = 0.001"),
     x = NULL, y = "CAD (summed over changing streams)"
   ) +
   theme_talk +
   theme(legend.position = "bottom", axis.text.x = element_text(angle = 30, hjust = 1),
         plot.margin = margin(5.5, 5.5, 5.5, 70))
-ggsave(file.path(sim_dir_loc, "graph_cad_total.png"), p12a, width = 11, height = 4.8, dpi = 220)
+ggsave(file.path(sim_dir_loc, "graph_cad_total.png"), p12a, width = 14, height = 5.2, dpi = 220)
 
 # ── Fig 12b: accumulating detections over time since the outbreak began ──────
 detect_long <- loc_graph %>%
