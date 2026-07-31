@@ -54,13 +54,15 @@ $K$ monitoring sites. The surveillance task has two components:
    determine *which* sites $k$ are driving the change, so that public-health
    resources can be directed appropriately.
 
-The `multichangepoints` package is designed for exactly this setting.
+The `multichangepoints` package is designed for this setting.
 A univariate test supermartingale (TSM) is built for each site,
 marginal increment sequences are combined across sites
 (via `ProductCombiner`, `AverageCombiner`, or `UniversalPortfolioCombiner`),
 and a single `ShiryaevRobertsDetector` monitors the combined evidence
 sequentially — stopping as soon as the evidence crosses a threshold that
 guarantees the desired error control.
+Localization is accomodated by the `LocalizedDetector`, which uses the same TSMs 
+but allocates a spending allowance across sites in a way that prioritizes those that are "near" alarmed sites.
 
 ---
 
@@ -402,12 +404,12 @@ It may be easier to define the state of control for certain sites, like those wi
 
 ---
 
-# Detection pipeline: localized alarm on normalized de-seasonalized signal
+# Detection pipeline: graph-aware localized alarm on raw viral load
 
-This section implements the pipeline from the slides: normalize (COVID/RSV ratio),
-de-seasonalize (cyclic spline on 2023–2025 training data), and run a
-`LocalizedDetector` on the probit-transformed residuals from the 2025–2026
-held-out period.
+This section builds a `LocalizedDetector` directly on each site's raw COVID-19 (covN2)
+signal, trains site-specific thresholds on 2023–2024 data, monitors 2025, and compares the
+uniform (e-d-Bonferroni) spending allowance against a graph-aware allowance built from the
+great-circle distance between sites -- the proximity graph of Section 8 of the manuscript.
 
 ## Site selection
 
@@ -419,7 +421,7 @@ covN2 and RSV within that window.
 library(mgcv)
 
 window_start <- as.Date("2023-01-01")
-train_end    <- as.Date("2025-01-01")
+train_end    <- as.Date("2024-01-01")   # training = 2023 only; monitor 2024-2025
 window_end   <- as.Date("2026-01-01")
 spine_pipe   <- seq(window_start, window_end, by = "7 days")
 n_expected   <- length(spine_pipe)
@@ -470,550 +472,294 @@ selected_sites <- site_completeness %>%
 cat("\nSelected sites (n =", length(selected_sites), "):\n")
 cat(paste(selected_sites, collapse = "\n"), "\n")
 ```
+## Data preparation: log1p transform, per-site 2023 normalization
 
-## Data preparation: log(covN2 / RSV), imputation
+We go back to the raw `covN2` signal (no RSV ratio) and apply $\log(1 + X_{tk})$: still
+non-negative, so it fits the package's bounded-mean TSM directly (`BoundedModel` only
+requires $X_{tk} \geq 0$ and a positive upper bound $\eta_k$, not $X_{tk} \in [0, 1]$), while
+compressing the raw signal's heavy right skew. Training is 2023 alone (`window_start` to
+`train_end`, 52 weeks); we monitor 2024 and 2025 together (`train_end` to `window_end`, 105
+weeks). Each site is then divided by its own *average* log1p value observed in 2023, so
+every site's training-period average maps to exactly 1 -- a per-site normalization that
+puts every site on the same scale without needing a second marker like RSV.
 
 ```{r pipeline-data-prep}
 K_sites <- length(selected_sites)
 
 pipe_long <- ww %>%
-  filter(measureid %in% c("covN2", "rsv"), site %in% selected_sites) %>%
-  select(site, weekstart, measureid, w_avg) %>%
-  pivot_wider(names_from = measureid, values_from = w_avg) %>%
-  filter(weekstart >= window_start, weekstart <= window_end) %>%
-  # Drop low covN2 outliers (no lower bound applied to RSV)
-  mutate(covN2 = ifelse(!is.na(covN2) & covN2 < 0.01, NA, covN2)) %>%
-  mutate(log_ratio = ifelse(covN2 > 0 & !is.na(covN2) & rsv > 0 & !is.na(rsv),
-                             log(covN2 / rsv), NA_real_)) %>%
-  select(site, weekstart, log_ratio) %>%
+  filter(measureid == "covN2", site %in% selected_sites,
+         weekstart >= window_start, weekstart <= window_end) %>%
+  select(site, weekstart, covN2 = w_avg) %>%
   # Fill the full weekly spine and interpolate gaps within each site's observed window
   complete(site, weekstart = spine_pipe) %>%
   arrange(site, weekstart) %>%
   group_by(site) %>%
-  mutate(log_ratio = impute_row(log_ratio)) %>%
+  mutate(covN2 = impute_row(covN2),
+         log_covN2 = log1p(covN2)) %>%
   ungroup()
 
-cat("NAs remaining after imputation:", sum(is.na(pipe_long$log_ratio)),
+# Per-site normalizer: average log1p(covN2) observed in the 2023 training year
+mean2023_k <- pipe_long %>%
+  filter(weekstart < train_end) %>%
+  group_by(site) %>%
+  summarize(mean2023 = mean(log_covN2, na.rm = TRUE), .groups = "drop")
+
+pipe_long <- pipe_long %>%
+  left_join(mean2023_k, by = "site") %>%
+  mutate(norm = log_covN2 / mean2023)
+
+cat("NAs remaining after imputation:", sum(is.na(pipe_long$norm)),
     "(leading/trailing offline periods)\n")
 
 # Wide matrix: K_sites rows x n_weeks columns
-ratio_matrix <- pipe_long %>%
-  pivot_wider(names_from = weekstart, values_from = log_ratio) %>%
+norm_matrix <- pipe_long %>%
+  select(site, weekstart, norm) %>%
+  pivot_wider(names_from = weekstart, values_from = norm) %>%
   column_to_rownames("site") %>%
   as.matrix()
 ```
 
-## De-seasonalization: cyclic spline on 2023–2025
+## Training-period thresholds and short-memory AGRAPA bets
 
-```{r pipeline-deseasonalize}
+Because every site is already normalized to its own 2023 average, $\eta_k = 1$ for every
+site $k$ by construction -- a detection identifies where the (EWMA-smoothed) log1p signal's
+local mean exceeds what was typical in 2023. The AGRAPA bet still uses the short-memory
+EWMA ($\rho = 0.7$, i.e. 70% weight on the most recent observation) from before. `mu_init`
+(the bet's starting mean estimate, before any monitoring-period data has arrived) is, for
+the same reason, also exactly 1 for every site, so the bet starts right at the null
+boundary.
+
+```{r pipeline-eta}
 train_idx <- which(spine_pipe <  train_end)
 test_idx  <- which(spine_pipe >= train_end)
 
-# Fit cyclic cubic spline on day-of-year using 2023–2025 training data;
-# predict the seasonal curve over the full window (2023–2026) to remove it.
-deseason_site <- function(y, dates) {
-  df <- data.frame(y = y, date = dates,
-                   yday = as.integer(format(dates, "%j")))
-  fit <- mgcv::gam(y ~ s(yday, bs = "cc", k = 10),
-                   data   = df[dates < train_end, ],
-                   knots  = list(yday = c(1, 365)),
-                   na.action = na.omit)
-  y - predict(fit, newdata = df)
-}
-
-resid_matrix <- ratio_matrix
-for (k in seq_len(K_sites))
-  resid_matrix[k, ] <- deseason_site(ratio_matrix[k, ], spine_pipe)
-
-# Quick sanity plot: training residuals should be roughly mean-zero
-train_resid_df <- as.data.frame(resid_matrix[, train_idx]) %>%
-  rownames_to_column("site") %>%
-  pivot_longer(-site, names_to = "date_chr", values_to = "resid") %>%
-  mutate(date = as.Date(date_chr))
-
-ggplot(train_resid_df, aes(x = date, y = resid, colour = site)) +
-  geom_line(linewidth = 0.4, alpha = 0.7, na.rm = TRUE) +
-  geom_hline(yintercept = 0, linetype = "dashed", colour = "grey40") +
-  facet_wrap(~ site, ncol = 3, scales = "free_y") +
-  scale_colour_viridis_d(option = "turbo", guide = "none") +
-  scale_x_date(date_breaks = "6 months", date_labels = "%b '%y") +
-  labs(x = NULL, y = "Residual log(covN2/RSV)",
-       title = "Training-period de-seasonalized residuals (2023–2025)") +
-  theme_bw(base_size = 9) +
-  theme(axis.text.x      = element_text(angle = 30, hjust = 1),
-        strip.background = element_rect(fill = "#D6EAF8"),
-        strip.text       = element_text(face = "bold", size = 8),
-        panel.grid.minor = element_blank())
+eta_k     <- setNames(rep(1, K_sites), rownames(norm_matrix))
+mu_init_k <- setNames(rep(1, K_sites), rownames(norm_matrix))
 ```
 
-## Probit transform and BoundedModel increments
+### Transformed signal, 2023-2025
 
-```{r pipeline-probit}
-# Standardize residuals by training-period SD per site; apply probit transform.
-# Under H0 (residuals ~ N(0, sigma^2)), pnorm(resid/sd) ~ Uniform(0,1) with
-# conditional mean 0.5, satisfying the BoundedModel null E[X_t] <= eta = 0.5.
-train_sd      <- apply(resid_matrix[, train_idx, drop = FALSE], 1, sd, na.rm = TRUE)
-probit_matrix <- pnorm(sweep(resid_matrix, 1, train_sd, "/"))
+By construction every site's 2023 (training, grey) trajectory averages exactly 1 (dotted
+line, $\eta_k$); the question the detector asks of 2024-2025 (blue) is whether the local
+mean climbs back up to that same historical average.
 
-# Test-period matrix: N_test x K_sites (as required by LocalizedDetector)
-test_mat   <- t(probit_matrix[, test_idx, drop = FALSE])
+```{r transformed-signal-plot, fig.height=9}
+pipe_long %>%
+  mutate(period = if_else(weekstart < train_end, "2023 (training)", "2024-2025 (monitoring)")) %>%
+  ggplot(aes(x = weekstart, y = norm, colour = period, group = site)) +
+  geom_line(linewidth = 0.5, na.rm = TRUE) +
+  geom_hline(yintercept = 1, linetype = "dotted", colour = "grey30", linewidth = 0.5) +
+  geom_vline(xintercept = train_end, linetype = "dashed", colour = "grey50", linewidth = 0.4) +
+  facet_wrap(~ site, ncol = 3) +
+  scale_colour_manual(values = c("2023 (training)"        = "gray45",
+                                 "2024-2025 (monitoring)" = "#2E86AB"),
+                      name = NULL) +
+  scale_x_date(date_breaks = "6 months", date_labels = "%b\n'%y") +
+  labs(x = NULL, y = "log1p(covN2) / mean[2023 log1p(covN2)]",
+       title = "Per-site-normalized log1p(covN2), 2023-2025, by selected site",
+       subtitle = "Dotted = eta_k = 1 (each site's own 2023 average); dashed = train/monitor split") +
+  theme_bw(base_size = 9) +
+  theme(legend.position   = "top",
+        strip.background  = element_rect(fill = "#D6EAF8"),
+        strip.text        = element_text(face = "bold", size = 8),
+        panel.grid.minor  = element_blank())
+```
+
+```{r pipeline-increments}
+test_mat   <- t(norm_matrix[, test_idx, drop = FALSE])   # N_test x K_sites
 test_dates <- spine_pipe[test_idx]
 N_test     <- nrow(test_mat)
 
-# Kelly-optimal fixed bet for a Beta(3,1) post-change distribution with eta = 0.5.
-# Discretise the Beta(3,1) density on a fine grid and pass to
-# compute_kelly_optimal_bet(), which finds lambda* maximising
-# E_{Beta(3,1)}[log(1 + lambda*(X - eta))].
-x_grid           <- seq(0.01, 0.99, length.out = 2000)
-kelly_bet_beta <- compute_kelly_optimal_bet(
-  l_i = x_grid,
-  eta = 0.5,
-  p_i = dbeta(x_grid, 1.5, 1)
-)
-
-# BoundedModel log-increments per stream using the Kelly-optimal fixed bet.
 inc_mat <- matrix(NA_real_, nrow = N_test, ncol = K_sites,
-                  dimnames = list(NULL, rownames(probit_matrix)))
-for (k in seq_len(K_sites))
-  inc_mat[, k] <- compute_increments(
-    TSM(BoundedModel(eta = 0.5, bets = FixedBet(kelly_bet_beta))),
-    test_mat[, k], log = TRUE)
+                  dimnames = list(NULL, rownames(norm_matrix)))
+for (k in seq_len(K_sites)) {
+  bm_k <- BoundedModel(eta = eta_k[k], bets = EWMABet(rho = 0.7, mu_init = mu_init_k[k]))
+  inc_mat[, k] <- compute_increments(TSM(bm_k), test_mat[, k], log = TRUE)
+}
 ```
 
-```{r beta31-kelly-plot}
-# Beta(3,1) density annotated with the Kelly-optimal bet.
-eta_val  <- 0.5
-lam_star <- kelly_bet_beta
+## A proximity graph on the K = 13 sites
 
-df_beta <- data.frame(x = x_grid, density = dbeta(x_grid, 1.5, 1))
+We build a `ProximityGraph` on the selected sites with great-circle distance (km) as the
+edge weight, geocoding each site the same way as the sampling-locations map above
+(`world.cities` join, with manual overrides for the metro-area facility names it can't
+match). For now the graph is taken to be fully connected -- every pair of sites gets an
+edge -- since we have no stronger prior on the true transmission network between them; see
+Section 8 of the manuscript for discussion.
 
-fig_dir <- file.path(
-  dirname(dirname(knitr::current_input(dir = TRUE))),
-  "ssc-2026", "figures", "nwmp"
-)
+```{r graph-geocode}
+site_city <- ww %>%
+  filter(site %in% selected_sites) %>%
+  distinct(site, city, province) %>%
+  mutate(city_clean = trimws(city))
 
-p_beta <- ggplot(df_beta, aes(x = x, y = density)) +
-  geom_area(data = subset(df_beta, x >= eta_val),
-            fill = "#2E86AB", alpha = 0.25) +
-  geom_area(data = subset(df_beta, x < eta_val),
-            fill = "#E84855", alpha = 0.25) +
-  geom_line(linewidth = 0.9, colour = "#1a1a2e") +
-  geom_vline(xintercept = eta_val, linetype = "dashed",
-             colour = "grey40", linewidth = 0.6) +
-  annotate("text", x = eta_val + 0.02, y = 2.8,
-           label = "eta == 0.5", parse = TRUE, hjust = 0, size = 3.5) +
-  annotate("text", x = 0.76, y = 1.0,
-           label = paste0("Kelly-optimal bet\nλ* = ", round(lam_star, 4)),
-           hjust = 0, size = 3.2, colour = "#2E86AB") +
-  scale_x_continuous(breaks = seq(0, 1, 0.25)) +
-  labs(x = "x", y = "Density",
-       title = "Beta(3/2, 1) post-change distribution",
-       subtitle = paste0("Kelly-optimal bet λ* = 1/η = ", round(lam_star, 4), "")) +
-  theme_bw(base_size = 11) +
-  theme(panel.grid.minor = element_blank())
+site_geo_k <- site_city %>%
+  left_join(
+    ca_cities %>% select(name, lat, long, pop),   # ca_cities: from the sampling-locations map above
+    by = c("city_clean" = "name"),
+    relationship = "many-to-many"
+  ) %>%
+  group_by(site) %>%
+  slice_max(pop, n = 1, with_ties = FALSE) %>%
+  ungroup() %>%
+  rows_update(manual_coords, by = "site", unmatched = "ignore") %>%
+  filter(!is.na(lat)) %>%
+  arrange(match(site, selected_sites))
 
-print(p_beta)
-ggsave(file.path(fig_dir, "beta_kelly_bet.png"), p_beta,
-       width = 6, height = 4, dpi = 300)
+stopifnot(nrow(site_geo_k) == K_sites, all(site_geo_k$site == rownames(norm_matrix)))
 ```
 
-## Raw vs. transformed streams
+```{r graph-build}
+haversine_km <- function(lat1, lon1, lat2, lon2) {
+  R <- 6371; to_rad <- pi / 180
+  dlat <- (lat2 - lat1) * to_rad; dlon <- (lon2 - lon1) * to_rad
+  a <- sin(dlat / 2)^2 + cos(lat1 * to_rad) * cos(lat2 * to_rad) * sin(dlon / 2)^2
+  2 * R * asin(pmin(1, sqrt(a)))
+}
 
-```{r pipeline-compare-plot, fig.width=12, fig.height=9}
-library(patchwork)
+# City-centroid geocoding puts same-city facility pairs (the two Toronto,
+# Montreal, Winnipeg, and Vancouver-area sites) at (near-)identical
+# coordinates; floor at a nominal 5 km since city-level geocoding can't
+# resolve true intra-city facility separation, and a structural zero would
+# read as "no edge" under ProximityGraph's convention.
+MIN_DIST_KM <- 5
+W_prox <- matrix(0, K_sites, K_sites)
+for (i in seq_len(K_sites)) for (j in seq_len(K_sites)) {
+  if (i != j) W_prox[i, j] <- max(MIN_DIST_KM,
+    haversine_km(site_geo_k$lat[i], site_geo_k$long[i],
+                site_geo_k$lat[j], site_geo_k$long[j]))
+}
+prox_graph <- ProximityGraph(W_prox, names = site_geo_k$site)
 
-resid_long <- as.data.frame(resid_matrix) %>%
-  rownames_to_column("site") %>%
-  pivot_longer(-site, names_to = "date_chr", values_to = "resid") %>%
-  mutate(date = as.Date(date_chr))
-
-probit_long <- as.data.frame(probit_matrix) %>%
-  rownames_to_column("site") %>%
-  pivot_longer(-site, names_to = "date_chr", values_to = "probit") %>%
-  mutate(date = as.Date(date_chr))
-
-p_raw <- resid_long %>%
-  ggplot(aes(x = date, y = resid, colour = site)) +
-  geom_line(linewidth = 0.4, alpha = 0.8, na.rm = TRUE) +
-  geom_vline(xintercept = train_end, linetype = "dashed", colour = "grey50") +
-  geom_hline(yintercept = 0, linetype = "dotted", colour = "grey40") +
-  facet_wrap(~ site, ncol = 2, scales = "free_y") +
-  scale_colour_viridis_d(option = "turbo", guide = "none") +
-  scale_x_date(date_breaks = "1 year", date_labels = "%Y") +
-  labs(x = NULL, y = "De-seasonalized residual",
-       title = "De-seasonalized log-ratio residuals",
-       subtitle = "Dashed = train / test split (Jan 2025)") +
-  theme_bw(base_size = 8) +
-  theme(axis.text.x      = element_text(angle = 30, hjust = 1),
-        strip.background = element_rect(fill = "#D6EAF8"),
-        strip.text       = element_text(face = "bold", size = 7),
-        panel.grid.minor = element_blank())
-
-p_probit <- probit_long %>%
-  ggplot(aes(x = date, y = probit, colour = site)) +
-  geom_line(linewidth = 0.4, alpha = 0.8, na.rm = TRUE) +
-  geom_vline(xintercept = train_end, linetype = "dashed", colour = "grey50") +
-  geom_hline(yintercept = 0.5, linetype = "dotted", colour = "grey40") +
-  facet_wrap(~ site, ncol = 2, scales = "free_y") +
-  scale_colour_viridis_d(option = "turbo", guide = "none") +
-  scale_x_date(date_breaks = "1 year", date_labels = "%Y") +
-  labs(x = NULL, y = "Probit-transformed residual",
-       title = "Probit(de-seasonalized residual)",
-       subtitle = "Dotted = null mean (0.5)") +
-  theme_bw(base_size = 8) +
-  theme(axis.text.x      = element_text(angle = 30, hjust = 1),
-        strip.background = element_rect(fill = "#FDEBD0"),
-        strip.text       = element_text(face = "bold", size = 7),
-        panel.grid.minor = element_blank())
-
-p_raw | p_probit
-
-# Wider standalone version (3 rows x 5 cols) for the SSC talk slides.
-p_probit_wide <- probit_long %>%
-  ggplot(aes(x = date, y = probit, colour = site)) +
-  geom_line(linewidth = 0.4, alpha = 0.8, na.rm = TRUE) +
-  geom_vline(xintercept = train_end, linetype = "dashed", colour = "grey50") +
-  geom_hline(yintercept = 0.5, linetype = "dotted", colour = "grey40") +
-  facet_wrap(~ site, nrow = 3, ncol = 5, scales = "free_y") +
-  scale_colour_viridis_d(option = "turbo", guide = "none") +
-  scale_x_date(date_breaks = "1 year", date_labels = "%Y") +
-  labs(x = NULL, y = "Probit-transformed residual",
-       title = "Probit(de-seasonalized residual)",
-       subtitle = "Dotted = null mean (0.5); dashed = train / test split (Jan 2025)") +
-  theme_bw(base_size = 9) +
-  theme(axis.text.x      = element_text(angle = 30, hjust = 1),
-        strip.background = element_rect(fill = "#FDEBD0"),
-        strip.text       = element_text(face = "bold", size = 8),
-        panel.grid.minor = element_blank())
-
-ggsave(
-  file.path(dirname(dirname(knitr::current_input(dir = TRUE))),
-            "ssc-2026", "figures", "nwmp", "probit_deseason_wide.png"),
-  p_probit_wide, width = 14, height = 7, dpi = 220
-)
-
-# Montreal-only version (two sites, side by side).
-p_probit_montreal <- probit_long %>%
-  filter(site %in% c("Montreal North", "Montreal South")) %>%
-  ggplot(aes(x = date, y = probit, colour = site)) +
-  geom_line(linewidth = 0.5, alpha = 0.85, na.rm = TRUE) +
-  geom_vline(xintercept = train_end, linetype = "dashed", colour = "grey50") +
-  geom_hline(yintercept = 0.5, linetype = "dotted", colour = "grey40") +
-  facet_wrap(~ site, nrow = 1, ncol = 2, scales = "free_y") +
-  scale_colour_viridis_d(option = "turbo", guide = "none") +
-  scale_x_date(date_breaks = "6 months", date_labels = "%b\n'%y") +
-  labs(x = NULL, y = "Probit-transformed residual",
-       title = "Probit(de-seasonalized residual) — Montréal sites",
-       subtitle = "Dotted = null mean (0.5); dashed = train / test split (Jan 2025)") +
-  theme_bw(base_size = 11) +
-  theme(axis.text.x      = element_text(angle = 0, hjust = 0.5),
-        strip.background = element_rect(fill = "#FDEBD0"),
-        strip.text       = element_text(face = "bold", size = 10),
-        panel.grid.minor = element_blank())
-
-ggsave(
-  file.path(dirname(dirname(knitr::current_input(dir = TRUE))),
-            "ssc-2026", "figures", "nwmp", "probit_deseason_montreal.png"),
-  p_probit_montreal, width = 10, height = 4, dpi = 220
-)
+cat("Edge weight (km) summary:\n")
+print(summary(W_prox[upper.tri(W_prox)]))
 ```
 
-## LocalizedDetector on 2025–2026
+## Choosing the kernel bandwidth
+
+The proximity allowance (Section 5.3 of the manuscript) redirects budget toward
+not-yet-alarmed sites in proportion to $\kappa(d) = e^{-d/\xi}$, so $\xi$ should be small
+relative to the *typical* distance between sites -- otherwise the kernel is nearly flat and
+the allowance barely differs from uniform -- but large enough that a plausible
+"regional cluster" of nearby cities still gets a meaningful boost, not just exact same-city
+duplicates. The distances above are heavily right-skewed: same-metro pairs sit at the 5 km
+floor, the next-nearest real neighbors are a few hundred km apart, and the bulk of pairs are
+continental (1,000-5,000 km). A bandwidth of $\xi = 200$ km separates these regimes cleanly:
+
+```{r kernel-bandwidth}
+xi <- 200
+d_check <- c(same_metro = 5, near_neighbor = 200, regional = 500, continental = 2000)
+cat("kernel weight at illustrative distances (xi =", xi, "km):\n")
+print(round(exp(-d_check / xi), 3))
+```
+
+so a same-metro pair keeps almost its full weight, a site a couple hundred km away still
+gets roughly a third of that, and anything beyond about 1,000 km contributes almost nothing
+-- i.e. the allowance reacts quickly to genuinely nearby cities without being diluted by the
+long tail of far-away sites. `xi` is easy to re-tune from the same distance summary above if
+a sharper or looser focus is preferred.
+
+## Two spending allowances: uniform vs. graph-aware
+
+We compare the uniform e-d-Bonferroni allowance to the graph-aware proximity allowance
+(exponential kernel, $\xi = 200$ km, focus parameter $\zeta = 0.9$) on the same increments,
+both controlling the same global ARL.
 
 ```{r pipeline-detect}
-alpha_global <- 1/(52 * 5)
+alpha_global <- 1 / 52   # one false alarm every year, on average
 log_thresh   <- log(1 / alpha_global)
 
-# Bonferroni allowance: uniform 1/K per stream
-ld      <- LocalizedDetector(K = K_sites, alpha = alpha_global, criterion = "ARL")
-det_out <- run_detector(ld, evidence = inc_mat, log = TRUE)
+ld_unif <- LocalizedDetector(K = K_sites, alpha = alpha_global, criterion = "ARL")
+ld_prox <- LocalizedDetector(
+  K = K_sites, alpha = alpha_global, criterion = "ARL",
+  proximity_graph = prox_graph,
+  kernel          = exponential_kernel(xi = xi),
+  zeta            = 0.9
+)
 
-# Per-stream stopping times → calendar dates
-stream_stops <- vapply(det_out$stream_results, `[[`, numeric(1L), "stopping_time")
-stop_dates   <- ifelse(is.finite(stream_stops),
-                        format(test_dates[pmin(as.integer(stream_stops), N_test)]),
-                        "no alarm")
-results_df <- data.frame(site      = rownames(probit_matrix),
-                          stop_date = stop_dates,
-                          row.names = NULL)
+det_unif <- run_detector(ld_unif, evidence = inc_mat, log = TRUE)
+det_prox <- run_detector(ld_prox, evidence = inc_mat, log = TRUE)
+
+stop_to_date <- function(stops) {
+  out <- rep("no alarm", length(stops))
+  fin <- is.finite(stops)
+  out[fin] <- format(test_dates[pmin(as.integer(stops[fin]), N_test)])
+  out
+}
+results_df <- data.frame(
+  site        = rownames(norm_matrix),
+  uniform     = stop_to_date(vapply(det_unif$stream_results, `[[`, numeric(1L), "stopping_time")),
+  proximity   = stop_to_date(vapply(det_prox$stream_results, `[[`, numeric(1L), "stopping_time")),
+  row.names   = NULL
+)
 
 cat("=== Detection results (alpha =", alpha_global,
     ", threshold = log(1/alpha) =", round(log_thresh, 2), ") ===\n")
-cat("Global alarm:", det_out$alarm, "\n")
-if (det_out$alarm) {
-  cat("Global stopping time:",
-      format(test_dates[det_out$stopping_time]), "\n")
-  cat("First alarming stream:",
-      rownames(probit_matrix)[det_out$first_alarm_stream], "\n")
-}
-cat("\nPer-stream results:\n")
+cat("Global alarm -- uniform:  ", det_unif$alarm, "\n")
+cat("Global alarm -- proximity:", det_prox$alarm, "\n\n")
 print(results_df)
 ```
+
+At $\alpha = 1/52$ (the per-stream statistic's threshold is $\log(1/\alpha) \approx 3.95$),
+both allowances now alarm. Regina crosses first, on 2024-12-22 (statistic $5.3$ under either
+allowance), and Winnipeg North End follows on 2024-12-29 (statistic $4.5$ under either
+allowance) -- both comfortably past threshold regardless of how the budget is split, so the
+choice of allowance doesn't matter for these two. It matters for a third: Winnipeg South
+End's statistic peaks at $3.65$ under the uniform allowance -- short of the $3.95$ bar, no
+alarm -- but at $4.02$ under the proximity allowance, which crosses it, alarming on
+2025-05-25. Winnipeg South End sits 5 km from Winnipeg North End, the closest pair of
+distinct sites in the whole network; once North End fired on 2024-12-29, the graph-aware
+allowance started redirecting budget toward its nearest not-yet-alarmed neighbors, and five
+months later that redirected budget was enough to push South End over a threshold uniform
+spending alone could not clear. That is precisely the mechanism Section 5.3 describes and
+Section 7.2's simulation study quantifies at scale, showing up here in a single real-data
+pair. Several other sites ran persistently elevated without ever crossing threshold --
+Halifax peaks at $3.8$, Montreal South and Winnipeg South End (under uniform) at $3.6$-$3.7$,
+Edmonton at $3.4$-$3.8$ depending on allowance -- a reminder that "no alarm" and "nothing
+happening" are not the same statement.
 
 ## Alarm plot
 
 ```{r pipeline-plot, fig.height=9}
-site_names <- rownames(probit_matrix)
+site_names <- rownames(norm_matrix)
 
-# Alarm annotation data frame (streams that fired)
-alarm_df <- results_df %>%
+alarm_df <- data.frame(
+  site       = rep(site_names, 2),
+  allowance  = rep(c("uniform", "proximity"), each = K_sites),
+  stop_date  = c(results_df$uniform, results_df$proximity)
+) %>%
   filter(stop_date != "no alarm") %>%
   mutate(alarm_date = as.Date(stop_date))
 
-# Log S-R statistic trajectories from the detector output
-sr_df <- lapply(seq_len(K_sites), function(k) {
-  data.frame(date   = test_dates,
-             site   = site_names[k],
-             log_SR = det_out$stream_results[[k]]$statistic)
-}) %>% bind_rows()
-
-# Probit residuals for test period (long format)
-probit_test_df <- as.data.frame(t(test_mat)) %>%
-  tibble::rownames_to_column("site") %>%
-  tidyr::pivot_longer(-site, names_to = "date_chr", values_to = "probit") %>%
+norm_test_df <- as.data.frame(t(norm_matrix[, test_idx, drop = FALSE])) %>%
+  tibble::rownames_to_column("date_chr") %>%
+  tidyr::pivot_longer(-date_chr, names_to = "site", values_to = "norm") %>%
   dplyr::mutate(date = as.Date(date_chr))
 
-# Panel 1: probit residuals with null-mean reference and alarm lines
-p_raw <- ggplot(probit_test_df, aes(x = date, y = probit, colour = site)) +
-  geom_line(linewidth = 0.5, alpha = 0.85, na.rm = TRUE) +
-  geom_hline(yintercept = 0.5, linetype = "dotted", colour = "grey40") +
-  geom_vline(data = alarm_df, aes(xintercept = alarm_date, colour = site),
-             linetype = "dashed", linewidth = 0.75) +
+p_alarm <- ggplot(norm_test_df, aes(x = date, y = norm)) +
+  geom_line(colour = "gray30", linewidth = 0.5, na.rm = TRUE) +
+  geom_hline(yintercept = 1, linetype = "dotted", colour = "grey40", linewidth = 0.6) +
+  geom_vline(data = filter(alarm_df, allowance == "uniform"),
+             aes(xintercept = alarm_date), colour = "#457b9d",
+             linetype = "dashed", linewidth = 0.7) +
+  geom_vline(data = filter(alarm_df, allowance == "proximity"),
+             aes(xintercept = alarm_date), colour = "#e07020",
+             linetype = "dashed", linewidth = 0.7) +
   facet_wrap(~ site, ncol = 3) +
-  scale_colour_viridis_d(option = "turbo", guide = "none") +
   scale_x_date(date_breaks = "3 months", date_labels = "%b\n'%y") +
-  labs(x = NULL, y = "Probit residual",
-       title = "Probit-transformed residuals — 2025–2026 test period",
-       subtitle = "Dotted = null mean (0.5); dashed = first S-R alarm") +
+  labs(x = NULL, y = "log1p(covN2) / mean[2023 log1p(covN2)]",
+       title = "2024-2025 normalized signal by site, with eta_k = 1 and detection dates",
+       subtitle = "Dotted = eta_k = 1 (each site's own 2023 average); dashed blue = uniform alarm; dashed orange = proximity alarm") +
   theme_bw(base_size = 9) +
   theme(strip.background = element_rect(fill = "#D6EAF8"),
         strip.text       = element_text(face = "bold", size = 8),
         panel.grid.minor = element_blank())
 
-# Panel 2: log S-R statistic with threshold
-p_sr <- ggplot(sr_df, aes(x = date, y = log_SR, colour = site)) +
-  geom_line(linewidth = 0.5, alpha = 0.85) +
-  geom_hline(yintercept = log_thresh, linetype = "dashed",
-             colour = "black", linewidth = 0.7) +
-  geom_vline(data = alarm_df, aes(xintercept = alarm_date, colour = site),
-             linetype = "dashed", linewidth = 0.75) +
-  facet_wrap(~ site, ncol = 3) +
-  scale_colour_viridis_d(option = "turbo", guide = "none") +
-  scale_x_date(date_breaks = "3 months", date_labels = "%b\n'%y") +
-  labs(x = NULL, y = expression(log~R[t]),
-       title = sprintf("Log Shiryaev–Roberts statistic (α = %.2f, threshold = %.1f)",
-                       alpha_global, log_thresh)) +
-  theme_bw(base_size = 9) +
-  theme(strip.background = element_rect(fill = "#FDEBD0"),
-        strip.text       = element_text(face = "bold", size = 8),
-        panel.grid.minor = element_blank())
-
-print(p_raw)
-print(p_sr)
+print(p_alarm)
 ```
 
----
-
-## Simple threshold baseline
-
-Before the statistical detector, it is worth asking what a completely
-transparent, rule-based approach would find: raise an alarm at site $k$
-the first time its log-covN2 signal exceeds the 95th percentile of its
-own 2023–2025 baseline.  The two chunks below first display the training
-period so the baseline distribution is visible, then apply the rule to
-the 2025–2026 hold-out period.
-
-```{r threshold-baseline-train, fig.height=8, fig.cap="Log-covN2 signal at selected sites during the 2023–2025 training period. The red dashed line marks the site-specific 95th percentile used as the detection threshold."}
-# Raw log-covN2 (already log10-transformed at source) for selected sites
-train_cov <- ww %>%
-  filter(measureid == "covN2", site %in% selected_sites,
-         weekstart >= window_start, weekstart < train_end) %>%
-  select(site, weekstart, w_avg)
-
-# Site-specific 95th-percentile threshold from training data
-site_p95 <- train_cov %>%
-  group_by(site) %>%
-  summarize(p95 = quantile(w_avg, 0.95, na.rm = TRUE), .groups = "drop")
-
-ggplot(train_cov, aes(x = weekstart, y = w_avg, colour = site)) +
-  geom_line(linewidth = 0.5, alpha = 0.85, na.rm = TRUE) +
-  geom_hline(data = site_p95, aes(yintercept = p95),
-             linetype = "dashed", colour = "firebrick", linewidth = 0.7) +
-  facet_wrap(~ site, ncol = 3, scales = "free_y") +
-  scale_colour_viridis_d(option = "turbo", guide = "none") +
-  scale_x_date(date_breaks = "6 months", date_labels = "%b\n'%y") +
-  labs(x = NULL, y = expression(log[10]~"(copies / mL)"),
-       title = "Training period: log-covN2 at selected sites (2023–2025)",
-       subtitle = "Red dashed line = site-specific 95th percentile (detection threshold)") +
-  theme_bw(base_size = 9) +
-  theme(strip.background = element_rect(fill = "#D6EAF8"),
-        strip.text       = element_text(face = "bold", size = 8),
-        panel.grid.minor = element_blank())
-```
-
-```{r threshold-baseline-test, fig.height=8, fig.cap="Log-covN2 signal during the 2025–2026 test period. The red dashed line is the 95th-percentile threshold from 2023–2025 training data; the vertical orange line marks the first week each site exceeds the threshold."}
-test_cov <- ww %>%
-  filter(measureid == "covN2", site %in% selected_sites,
-         weekstart >= train_end, weekstart <= window_end) %>%
-  select(site, weekstart, w_avg)
-
-# First week each site exceeds the training-period 95th percentile
-first_exceed <- test_cov %>%
-  left_join(site_p95, by = "site") %>%
-  filter(!is.na(w_avg), w_avg > p95) %>%
-  group_by(site) %>%
-  slice_min(weekstart, n = 1, with_ties = FALSE) %>%
-  ungroup() %>%
-  rename(alarm_date = weekstart)
-
-cat("=== Simple threshold detections (95th percentile rule) ===\n")
-all_sites_df <- data.frame(site = selected_sites) %>%
-  left_join(first_exceed %>% select(site, alarm_date), by = "site") %>%
-  mutate(alarm_date = ifelse(is.na(alarm_date), "no alarm",
-                             format(alarm_date)))
-print(all_sites_df)
-
-ggplot(test_cov, aes(x = weekstart, y = w_avg, colour = site)) +
-  geom_line(linewidth = 0.5, alpha = 0.85, na.rm = TRUE) +
-  geom_hline(data = site_p95, aes(yintercept = p95),
-             linetype = "dashed", colour = "firebrick", linewidth = 0.7) +
-  geom_vline(data = first_exceed, aes(xintercept = alarm_date),
-             colour = "darkorange", linewidth = 0.9) +
-  facet_wrap(~ site, ncol = 3, scales = "free_y") +
-  scale_colour_viridis_d(option = "turbo", guide = "none") +
-  scale_x_date(date_breaks = "3 months", date_labels = "%b\n'%y") +
-  labs(x = NULL, y = expression(log[10]~"(copies / mL)"),
-       title = "Test period: log-covN2 with 95th-percentile threshold alarms (2025–2026)",
-       subtitle = "Red dashed = training-period 95th percentile; orange = first exceedance") +
-  theme_bw(base_size = 9) +
-  theme(strip.background = element_rect(fill = "#D6EAF8"),
-        strip.text       = element_text(face = "bold", size = 8),
-        panel.grid.minor = element_blank())
-```
-
----
-
-# Secondary analysis: exp-transformed de-seasonalized residuals
-
-This analysis follows the first two steps of the main pipeline
-(RSV ratio, cyclic-spline de-seasonalisation) but replaces the final
-probit transform with the natural exponential.  Since
-$\exp(\varepsilon_t) > 0$ for any residual $\varepsilon_t$, the
-`BoundedModel` is still a valid test supermartingale: the increment
-$1 + \lambda(X_t - \eta)$ remains non-negative as long as
-$\lambda \leq 1/\eta$, which the AGRAPA cap enforces automatically.
-The data do not need to lie in $[0, 1]$; non-negativity alone suffices.
-
-The null mean $\eta_k$ is set to the **75th percentile** of
-$\exp(\hat\varepsilon_{kt})$ over the 2023–2025 training period.
-Under the null the residuals are mean-zero, so $E[\exp(\varepsilon)] =
-e^{\sigma^2/2}$ (lognormal moment); the 75th percentile is a
-conservative upper bound that gives the bet room to grow only when the
-signal **persistently exceeds its typical pre-change range**.
-
-```{r exp-resid-prep}
-# exp(de-seasonalized log-ratio residuals); resid_matrix is computed above
-# in the pipeline-deseasonalize chunk.
-exp_resid_mat <- exp(resid_matrix)
-
-# Per-site eta: 75th percentile of exp-residuals in the training period.
-eta_exp <- apply(exp_resid_mat[, train_idx, drop = FALSE], 1,
-                 quantile, probs = 0.75, na.rm = TRUE)
-
-cat("Per-site eta (75th pctile of exp(de-seasonalized residual), training):\n")
-print(round(eta_exp, 3))
-```
-
-```{r exp-resid-detect}
-test_exp_mat <- t(exp_resid_mat[, test_idx, drop = FALSE])   # N_test x K
-N_exp        <- nrow(test_exp_mat)
-
-# BoundedModel log-increments per stream, site-specific eta, EWMA-AGRAPA.
-inc_exp <- matrix(NA_real_, nrow = N_exp, ncol = K_sites,
-                  dimnames = list(NULL, selected_sites))
-for (k in seq_len(K_sites))
-  inc_exp[, k] <- compute_increments(
-    TSM(BoundedModel(eta = eta_exp[k], bets = EWMABet(rho = 0.1))),
-    test_exp_mat[, k], log = TRUE)
-
-# LocalizedDetector — same alpha and ARL criterion as the main pipeline.
-ld_exp  <- LocalizedDetector(K = K_sites, alpha = alpha_global, criterion = "ARL")
-det_exp <- run_detector(ld_exp, evidence = inc_exp, log = TRUE)
-
-stream_stops_exp <- vapply(det_exp$stream_results, `[[`, numeric(1L), "stopping_time")
-stop_dates_exp   <- ifelse(
-  is.finite(stream_stops_exp),
-  format(test_dates[pmin(as.integer(stream_stops_exp), N_exp)]),
-  "no alarm"
-)
-results_exp_df <- data.frame(site      = selected_sites,
-                             stop_date = stop_dates_exp,
-                             row.names = NULL)
-
-cat("=== Exp-residual detection (EWMA-AGRAPA, alpha =", alpha_global,
-    ", threshold =", round(log_thresh, 2), ") ===\n")
-cat("Global alarm:", det_exp$alarm, "\n")
-if (det_exp$alarm)
-  cat("Global stopping time:", format(test_dates[det_exp$stopping_time]), "\n")
-cat("\nPer-stream results:\n")
-print(results_exp_df)
-```
-
-```{r exp-resid-plot, fig.height=9}
-alarm_exp_df <- results_exp_df %>%
-  filter(stop_date != "no alarm") %>%
-  mutate(alarm_date = as.Date(stop_date))
-
-sr_exp_df <- lapply(seq_len(K_sites), function(k) {
-  data.frame(date   = test_dates,
-             site   = selected_sites[k],
-             log_SR = det_exp$stream_results[[k]]$statistic)
-}) %>% bind_rows()
-
-eta_exp_df <- data.frame(site = selected_sites, eta = eta_exp)
-
-exp_test_df <- as.data.frame(t(exp_resid_mat[, test_idx, drop = FALSE])) %>%
-  tibble::rownames_to_column("date_chr") %>%
-  tidyr::pivot_longer(-date_chr, names_to = "site", values_to = "value") %>%
-  dplyr::mutate(date = as.Date(date_chr)) %>%
-  left_join(eta_exp_df, by = "site")
-
-# Panel 1: exp(residual) with per-site eta reference and alarm lines
-p_exp <- ggplot(exp_test_df, aes(x = date, y = value, colour = site)) +
-  geom_line(linewidth = 0.5, alpha = 0.85, na.rm = TRUE) +
-  geom_hline(data = eta_exp_df, aes(yintercept = eta),
-             linetype = "dotted", colour = "grey30", linewidth = 0.6) +
-  geom_vline(data = alarm_exp_df, aes(xintercept = alarm_date, colour = site),
-             linetype = "dashed", linewidth = 0.75) +
-  facet_wrap(~ site, ncol = 3) +
-  scale_colour_viridis_d(option = "turbo", guide = "none") +
-  scale_x_date(date_breaks = "3 months", date_labels = "%b\n'%y") +
-  labs(x = NULL, y = expression(exp(hat(epsilon)[t])),
-       title = "exp(de-seasonalized log-ratio residual) — 2025–2026 test period",
-       subtitle = "Dotted = per-site eta (75th pctile training); dashed = first S-R alarm") +
-  theme_bw(base_size = 9) +
-  theme(strip.background = element_rect(fill = "#D6EAF8"),
-        strip.text       = element_text(face = "bold", size = 8),
-        panel.grid.minor = element_blank())
-
-# Panel 2: log S-R statistic with threshold
-p_sr_exp <- ggplot(sr_exp_df, aes(x = date, y = log_SR, colour = site)) +
-  geom_line(linewidth = 0.5, alpha = 0.85) +
-  geom_hline(yintercept = log_thresh, linetype = "dashed",
-             colour = "black", linewidth = 0.7) +
-  geom_vline(data = alarm_exp_df, aes(xintercept = alarm_date, colour = site),
-             linetype = "dashed", linewidth = 0.75) +
-  facet_wrap(~ site, ncol = 3) +
-  scale_colour_viridis_d(option = "turbo", guide = "none") +
-  scale_x_date(date_breaks = "3 months", date_labels = "%b\n'%y") +
-  labs(x = NULL, y = expression(log~R[t]),
-       title = sprintf("Log S-R statistic — exp-residual AGRAPA (alpha = %.4f, threshold = %.1f)",
-                       alpha_global, log_thresh)) +
-  theme_bw(base_size = 9) +
-  theme(strip.background = element_rect(fill = "#FDEBD0"),
-        strip.text       = element_text(face = "bold", size = 8),
-        panel.grid.minor = element_blank())
-
-print(p_exp)
-print(p_sr_exp)
-```
+Regina and Winnipeg North End (blue and orange dashed lines coincide for both) show a
+sustained run of weeks above their dotted $\eta_k$ line right before their December 2024
+alarms. Winnipeg South End's own crossings are visibly weaker -- consistent with alarming
+only under the proximity allowance (orange), five months later, once its neighbor's alarm
+had already redirected budget toward it.
